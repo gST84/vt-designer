@@ -112,8 +112,50 @@ export function runTests(log = (s) => console.log(s)) {
     const len = c.code === 0xb3 ? 8 : c.code === 0xb4 ? 9 : 8;
     check(`macro ${c.name}`, b.length === len && JSON.stringify(back) === JSON.stringify(v), `${hex(b)} ${JSON.stringify(back)}`);
   }
-  const cmds = [encodeCommand(0xb3, { obj: 1, text: 'abcdefgh' }), encodeCommand(0xb4, { parent: 1, obj: 2, x: 3, y: 4 }), encodeCommand(0xa3, {})];
+  const cmds = [encodeCommand(0xb3, { obj: 1, text: 'abcdefgh' }), encodeCommand(0xb4, { parent: 1, obj: 2, x: 3, y: 4 }), encodeCommand(0x92, {})];
   check('macro-opdrachten splitsen', JSON.stringify(splitCommands(joinCommands(cmds))) === JSON.stringify(cmds));
+  // function codes of ISO 11783-6 (same as AgIsoStack++ and can_log_tools/decode.py VT_FUNC)
+  const iso = {
+    'Hide/Show Object': 0xa0, 'Enable/Disable Object': 0xa1, 'Select Input Object': 0xa2, ESC: 0x92,
+    'Control Audio Signal': 0xa3, 'Set Audio Volume': 0xa4, 'Change Child Location': 0xa5, 'Change Size': 0xa6,
+    'Change Background Colour': 0xa7, 'Change Numeric Value': 0xa8, 'Change End Point': 0xa9, 'Change Font Attributes': 0xaa,
+    'Change Line Attributes': 0xab, 'Change Fill Attributes': 0xac, 'Change Active Mask': 0xad, 'Change Soft Key Mask': 0xae,
+    'Change Attribute': 0xaf, 'Change Priority': 0xb0, 'Change List Item': 0xb1, 'Change String Value': 0xb3, 'Change Child Position': 0xb4,
+  };
+  const wrong = COMMANDS.filter((c) => iso[c.name] !== c.code).map((c) => `${c.name} = ${c.code.toString(16)}`);
+  check('macro-functiecodes volgens ISO 11783-6', wrong.length === 0 && COMMANDS.length === Object.keys(iso).length, wrong.join(', '));
+
+  // 5b. projects of file version 1 had the codes 0xA3–0xB2 one too high
+  const ff = (n) => Array(n).fill(0xff);
+  const oldCmds = [
+    [0xae, 0, 0, 0xe8, 0x03, ...ff(3)], // Change Active Mask (old code) → 0xAD
+    [0xa3, ...ff(7)], // ESC → 0x92
+    [0xa4, 2, 0xe8, 3, 100, 0, 50, 0], // Control Audio Signal → 0xA3
+    [0xa9, 0x10, 0x27, 0xff, 5, 0, 0, 0], // Change Numeric Value → 0xA8
+    [0xb2, 0x10, 0x27, 1, 0xf8, 0x2a, 0xff, 0xff], // Change List Item → 0xB1
+    [0xb3, 0xf8, 0x2a, 2, 0, 0xae, 0xa3], // Change String Value: unchanged, text bytes too
+    [0xb4, 0xe8, 3, 0xf8, 0x2a, 0xa9, 0, 0xb2, 0], // Change Child Position: unchanged, values too
+    [0xa0, 0xf8, 0x2a, 1, ...ff(4), 0xaf, 0, 0, 1, 0xe9, 3, ...ff(3)], // raw entry with 2 commands: Hide/Show + Change Soft Key Mask → 0xAE
+  ];
+  const newCmds = [
+    [0xad, 0, 0, 0xe8, 0x03, ...ff(3)],
+    [0x92, ...ff(7)],
+    [0xa3, 2, 0xe8, 3, 100, 0, 50, 0],
+    [0xa8, 0x10, 0x27, 0xff, 5, 0, 0, 0],
+    [0xb1, 0x10, 0x27, 1, 0xf8, 0x2a, 0xff, 0xff],
+    [0xb3, 0xf8, 0x2a, 2, 0, 0xae, 0xa3],
+    [0xb4, 0xe8, 3, 0xf8, 0x2a, 0xa9, 0, 0xb2, 0],
+    [0xa0, 0xf8, 0x2a, 1, ...ff(4), 0xae, 0, 0, 1, 0xe9, 3, ...ff(3)],
+  ];
+  const v1 = JSON.parse(JSON.stringify(newProject()));
+  v1.version = 1;
+  v1.objects[5] = { id: 5, type: 28, name: 'OudeMacro', commands: oldCmds };
+  const v2 = normalizeProject(v1);
+  check('project versie 1: macrocodes omgezet naar ISO', v2.version === 2 && JSON.stringify(v2.objects[5].commands) === JSON.stringify(newCmds),
+    v2.objects[5].commands.map(hex).join(' | '));
+  check('project versie 2: macrocodes niet nog eens omgezet', JSON.stringify(normalizeProject(JSON.parse(JSON.stringify(v2))).objects[5].commands) === JSON.stringify(newCmds));
+  const iopIn = projectFromObjects(parsePool(encodePool(v2.objects).bytes));
+  check('.iop inlezen: macrocodes ongewijzigd', JSON.stringify(normalizeProject(iopIn).objects[5].commands) === JSON.stringify(newCmds.flatMap((c) => splitCommands(c))));
 
   // 6. model operations
   const p3 = newProject();

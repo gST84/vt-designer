@@ -2,6 +2,10 @@
 // { id, type, name, ...attributes } with the attribute names of src/iso/schema.js.
 import { TYPES, NONE } from './iso/schema.js';
 import { forEachRef } from './iso/codec.js';
+import { upgradeV1Command } from './iso/macros.js';
+
+/** File format version of saved projects (2: macro command codes per ISO 11783-6). */
+export const PROJECT_VERSION = 2;
 
 export const DEFAULT_SETTINGS = {
   dmSize: 480, // data mask: width = height (pixels), from Get Hardware
@@ -164,8 +168,14 @@ export function sizeOf(p, obj, depth = 0) {
 
 /** Fills in missing settings and attributes (older files, imported pools). */
 export function normalizeProject(p) {
+  // version 1 → 2: macro command codes 0xA3–0xB2 corrected to ISO 11783-6 (they were one too high)
+  if (p.version === 1) {
+    for (const o of Object.values(p.objects || {})) {
+      if (o?.type === 28 && Array.isArray(o.commands)) o.commands = o.commands.map(upgradeV1Command);
+    }
+  }
   p.format = 'vt-designer';
-  p.version = 1;
+  p.version = PROJECT_VERSION;
   p.name = p.name || 'Nieuw project';
   p.settings = { ...DEFAULT_SETTINGS, ...(p.settings || {}) };
   p.export = { ...DEFAULT_EXPORT, ...(p.export || {}) };

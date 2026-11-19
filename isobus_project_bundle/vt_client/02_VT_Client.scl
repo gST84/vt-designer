@@ -518,7 +518,7 @@ BEGIN
 	                    #diag.lastCmdError := #msg[4];
 	                END_IF;
 
-	            169, 174:  // 0xA9 Change Numeric Value, 0xAE Change Active Mask: object-ID, fout
+	            168, 173:  // 0xA8 Change Numeric Value, 0xAD Change Active Mask: object-ID, fout
 	                #found := TRUE;
 	                IF #msg[3] <> 16#00 THEN
 	                    #diag.cmdErrors := #diag.cmdErrors + 1;
@@ -720,7 +720,7 @@ BEGIN
 	                #ctrl.maskDirty := FALSE;
 	            ELSE
 	                #d := #ff8;
-	                #d[0] := 16#AE;
+	                #d[0] := 16#AD;   // Change Active Mask
 	                #d[1] := WORD_TO_BYTE(UINT_TO_WORD(#ctrl.wsId));
 	                #d[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#ctrl.wsId), N := 8));
 	                #d[3] := WORD_TO_BYTE(UINT_TO_WORD(#ctrl.mask));
@@ -775,7 +775,7 @@ BEGIN
 	                END_IF;
 	                #v := #num[#iNum].value;
 	                #d := #ff8;
-	                #d[0] := 16#A9;
+	                #d[0] := 16#A8;   // Change Numeric Value
 	                #d[1] := WORD_TO_BYTE(UINT_TO_WORD(#tid));
 	                #d[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#tid), N := 8));
 	                #d[4] := DWORD_TO_BYTE(UDINT_TO_DWORD(#v));

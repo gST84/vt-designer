@@ -7,22 +7,22 @@ export const COMMANDS = [
   { code: 0xa0, name: 'Hide/Show Object', nl: 'Verbergen/tonen', layout: [['id', 'obj', 'Object'], ['u8', 'show', 'Actie', [[0, 'Verbergen'], [1, 'Tonen']]]] },
   { code: 0xa1, name: 'Enable/Disable Object', nl: 'In-/uitschakelen', layout: [['id', 'obj', 'Object'], ['u8', 'enable', 'Actie', [[0, 'Uitschakelen'], [1, 'Inschakelen']]]] },
   { code: 0xa2, name: 'Select Input Object', nl: 'Invoerveld selecteren', layout: [['id', 'obj', 'Object'], ['u8', 'option', 'Optie', [[255, 'Selecteren'], [0, 'Openen voor invoer (v4)']]]] },
-  { code: 0xa3, name: 'ESC', nl: 'Invoer annuleren (ESC)', layout: [] },
-  { code: 0xa4, name: 'Control Audio Signal', nl: 'Geluidssignaal', layout: [['u8', 'repeat', 'Herhalingen'], ['u16', 'freq', 'Frequentie (Hz)'], ['u16', 'on', 'Aan (ms)'], ['u16', 'off', 'Uit (ms)']] },
-  { code: 0xa5, name: 'Set Audio Volume', nl: 'Volume', layout: [['u8', 'volume', 'Volume (%)']] },
-  { code: 0xa6, name: 'Change Child Location', nl: 'Kind verschuiven', layout: [['id', 'parent', 'Ouder'], ['id', 'obj', 'Kind'], ['rel', 'dx', 'Δx'], ['rel', 'dy', 'Δy']] },
-  { code: 0xa7, name: 'Change Size', nl: 'Grootte wijzigen', layout: [['id', 'obj', 'Object'], ['u16', 'w', 'Breedte'], ['u16', 'h', 'Hoogte']] },
-  { code: 0xa8, name: 'Change Background Colour', nl: 'Achtergrondkleur wijzigen', layout: [['id', 'obj', 'Object'], ['colour', 'colour', 'Kleur']] },
-  { code: 0xa9, name: 'Change Numeric Value', nl: 'Waarde wijzigen', layout: [['id', 'obj', 'Object'], ['ff'], ['u32', 'value', 'Waarde']] },
-  { code: 0xaa, name: 'Change End Point', nl: 'Eindpunt lijn wijzigen', layout: [['id', 'obj', 'Lijn'], ['u16', 'w', 'Breedte'], ['u16', 'h', 'Hoogte'], ['u8', 'dir', 'Richting', [[0, 'Linksboven → rechtsonder'], [1, 'Linksonder → rechtsboven']]]] },
-  { code: 0xab, name: 'Change Font Attributes', nl: 'Lettertype wijzigen', layout: [['id', 'obj', 'Lettertype'], ['colour', 'colour', 'Kleur'], ['u8', 'size', 'Grootte (code)'], ['u8', 'type', 'Tekenset'], ['u8', 'style', 'Stijl (bits)']] },
-  { code: 0xac, name: 'Change Line Attributes', nl: 'Lijnattributen wijzigen', layout: [['id', 'obj', 'Lijnattributen'], ['colour', 'colour', 'Kleur'], ['u8', 'width', 'Dikte'], ['u16', 'art', 'Patroon']] },
-  { code: 0xad, name: 'Change Fill Attributes', nl: 'Vulattributen wijzigen', layout: [['id', 'obj', 'Vulattributen'], ['u8', 'type', 'Vulling'], ['colour', 'colour', 'Kleur'], ['id', 'pattern', 'Patroon']] },
-  { code: 0xae, name: 'Change Active Mask', nl: 'Actief masker wijzigen', layout: [['id', 'ws', 'Werkset'], ['id', 'mask', 'Masker']] },
-  { code: 0xaf, name: 'Change Soft Key Mask', nl: 'Softkeymasker wijzigen', layout: [['u8', 'maskType', 'Soort masker', [[1, 'Datamasker'], [2, 'Alarmmasker']]], ['id', 'mask', 'Masker'], ['id', 'skm', 'Softkeymasker']] },
-  { code: 0xb0, name: 'Change Attribute', nl: 'Attribuut wijzigen', layout: [['id', 'obj', 'Object'], ['u8', 'aid', 'Attribuut-ID'], ['u32', 'value', 'Waarde']] },
-  { code: 0xb1, name: 'Change Priority', nl: 'Prioriteit alarm wijzigen', layout: [['id', 'obj', 'Alarmmasker'], ['u8', 'priority', 'Prioriteit', [[0, 'Hoog'], [1, 'Middel'], [2, 'Laag']]]] },
-  { code: 0xb2, name: 'Change List Item', nl: 'Lijstitem wijzigen', layout: [['id', 'obj', 'Lijst'], ['u8', 'index', 'Index'], ['id', 'item', 'Nieuw item']] },
+  { code: 0x92, name: 'ESC', nl: 'Invoer annuleren (ESC)', layout: [] },
+  { code: 0xa3, name: 'Control Audio Signal', nl: 'Geluidssignaal', layout: [['u8', 'repeat', 'Herhalingen'], ['u16', 'freq', 'Frequentie (Hz)'], ['u16', 'on', 'Aan (ms)'], ['u16', 'off', 'Uit (ms)']] },
+  { code: 0xa4, name: 'Set Audio Volume', nl: 'Volume', layout: [['u8', 'volume', 'Volume (%)']] },
+  { code: 0xa5, name: 'Change Child Location', nl: 'Kind verschuiven', layout: [['id', 'parent', 'Ouder'], ['id', 'obj', 'Kind'], ['rel', 'dx', 'Δx'], ['rel', 'dy', 'Δy']] },
+  { code: 0xa6, name: 'Change Size', nl: 'Grootte wijzigen', layout: [['id', 'obj', 'Object'], ['u16', 'w', 'Breedte'], ['u16', 'h', 'Hoogte']] },
+  { code: 0xa7, name: 'Change Background Colour', nl: 'Achtergrondkleur wijzigen', layout: [['id', 'obj', 'Object'], ['colour', 'colour', 'Kleur']] },
+  { code: 0xa8, name: 'Change Numeric Value', nl: 'Waarde wijzigen', layout: [['id', 'obj', 'Object'], ['ff'], ['u32', 'value', 'Waarde']] },
+  { code: 0xa9, name: 'Change End Point', nl: 'Eindpunt lijn wijzigen', layout: [['id', 'obj', 'Lijn'], ['u16', 'w', 'Breedte'], ['u16', 'h', 'Hoogte'], ['u8', 'dir', 'Richting', [[0, 'Linksboven → rechtsonder'], [1, 'Linksonder → rechtsboven']]]] },
+  { code: 0xaa, name: 'Change Font Attributes', nl: 'Lettertype wijzigen', layout: [['id', 'obj', 'Lettertype'], ['colour', 'colour', 'Kleur'], ['u8', 'size', 'Grootte (code)'], ['u8', 'type', 'Tekenset'], ['u8', 'style', 'Stijl (bits)']] },
+  { code: 0xab, name: 'Change Line Attributes', nl: 'Lijnattributen wijzigen', layout: [['id', 'obj', 'Lijnattributen'], ['colour', 'colour', 'Kleur'], ['u8', 'width', 'Dikte'], ['u16', 'art', 'Patroon']] },
+  { code: 0xac, name: 'Change Fill Attributes', nl: 'Vulattributen wijzigen', layout: [['id', 'obj', 'Vulattributen'], ['u8', 'type', 'Vulling'], ['colour', 'colour', 'Kleur'], ['id', 'pattern', 'Patroon']] },
+  { code: 0xad, name: 'Change Active Mask', nl: 'Actief masker wijzigen', layout: [['id', 'ws', 'Werkset'], ['id', 'mask', 'Masker']] },
+  { code: 0xae, name: 'Change Soft Key Mask', nl: 'Softkeymasker wijzigen', layout: [['u8', 'maskType', 'Soort masker', [[1, 'Datamasker'], [2, 'Alarmmasker']]], ['id', 'mask', 'Masker'], ['id', 'skm', 'Softkeymasker']] },
+  { code: 0xaf, name: 'Change Attribute', nl: 'Attribuut wijzigen', layout: [['id', 'obj', 'Object'], ['u8', 'aid', 'Attribuut-ID'], ['u32', 'value', 'Waarde']] },
+  { code: 0xb0, name: 'Change Priority', nl: 'Prioriteit alarm wijzigen', layout: [['id', 'obj', 'Alarmmasker'], ['u8', 'priority', 'Prioriteit', [[0, 'Hoog'], [1, 'Middel'], [2, 'Laag']]]] },
+  { code: 0xb1, name: 'Change List Item', nl: 'Lijstitem wijzigen', layout: [['id', 'obj', 'Lijst'], ['u8', 'index', 'Index'], ['id', 'item', 'Nieuw item']] },
   { code: 0xb3, name: 'Change String Value', nl: 'Tekst wijzigen', layout: [['id', 'obj', 'Object'], ['text', 'text', 'Tekst']] },
   { code: 0xb4, name: 'Change Child Position', nl: 'Kind verplaatsen', layout: [['id', 'parent', 'Ouder'], ['id', 'obj', 'Kind'], ['u16', 'x', 'X'], ['u16', 'y', 'Y']] },
 ];
@@ -50,6 +50,22 @@ export function splitCommands(data) {
 }
 
 export const joinCommands = (cmds) => Uint8Array.from((cmds || []).flat());
+
+/**
+ * Projects up to file version 1 stored macros with the codes 0xA3–0xB2 one too high (ESC as 0xA3
+ * … Change List Item as 0xB2). Returns the command bytes with the ISO 11783-6 codes. A stored
+ * command may hold several commands (raw input), so every command start in it is remapped.
+ */
+export function upgradeV1Command(bytes) {
+  const out = Array.from(bytes);
+  for (let p = 0; p < out.length;) {
+    const n = commandLength(out, p); // 0xB3/0xB4 (variable length) kept their codes
+    if (out[p] === 0xa3) out[p] = 0x92;
+    else if (out[p] > 0xa3 && out[p] <= 0xb2) out[p] -= 1;
+    p += n;
+  }
+  return out;
+}
 
 /** Values of a command as an object keyed by the layout names (null for unknown codes). */
 export function decodeCommand(bytes) {
