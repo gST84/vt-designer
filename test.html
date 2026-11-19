@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>VT Designer – tests</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>body { padding: 16px; } pre { font: 12px/1.5 ui-monospace, Menlo, monospace; }</style>
+</head>
+<body>
+  <h2>Zelftest encoder, parser en exports</h2>
+  <pre id="out"></pre>
+  <script type="module">
+    import { runTests } from './src/tests.js';
+    const out = document.getElementById('out');
+    const fails = runTests((s) => { out.textContent += s + '\n'; });
+    document.title = fails ? `FOUT (${fails})` : 'OK';
+  </script>
+</body>
+</html>

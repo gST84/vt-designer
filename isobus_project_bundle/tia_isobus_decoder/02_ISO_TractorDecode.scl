@@ -1,0 +1,425 @@
+// =====================================================================
+//  ISOBUS / J1939 decoder voor standaard tractorberichten
+//  S7-1500 + ET 200SP CM CAN (transparante modus, 29-bit frames)
+//  Importeren NA 01_ISO_Types.udt. Versie 0.1 – 2026-11-18
+//
+//  Bronnen schaling: ISO 11783-7 (isobus.net Data Dictionary) en SAE J1939-71.
+//  Velden gemarkeerd "NIET GEVERIFIEERD" eerst controleren met een bus-log.
+// =====================================================================
+
+FUNCTION "ISO_Bits" : USInt
+TITLE = 'Bitveld uit een byte (startBit 1 = LSB, zoals in de norm)'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      value : Byte;
+      startBit : USInt;   // 1..8
+      len : USInt;   // 1..8
+   END_VAR
+   VAR_TEMP
+      shift : USInt;
+      maskShift : USInt;
+   END_VAR
+
+BEGIN
+	#shift := #startBit - 1;
+	#maskShift := 8 - #len;
+	#ISO_Bits := BYTE_TO_USINT(SHR(IN := #value, N := #shift) AND SHR(IN := BYTE#16#FF, N := #maskShift));
+END_FUNCTION
+
+FUNCTION "ISO_U16" : UInt
+TITLE = 'Little-endian 16-bit waarde'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      lo : Byte;
+      hi : Byte;
+   END_VAR
+
+BEGIN
+	#ISO_U16 := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#hi), N := 8) OR BYTE_TO_WORD(#lo));
+END_FUNCTION
+
+FUNCTION "ISO_U32" : UDInt
+TITLE = 'Little-endian 32-bit waarde'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      b0 : Byte;   // laagste byte
+      b1 : Byte;
+      b2 : Byte;
+      b3 : Byte;   // hoogste byte
+   END_VAR
+
+BEGIN
+	#ISO_U32 := DWORD_TO_UDINT(SHL(IN := BYTE_TO_DWORD(#b3), N := 24)
+	                          OR SHL(IN := BYTE_TO_DWORD(#b2), N := 16)
+	                          OR SHL(IN := BYTE_TO_DWORD(#b1), N := 8)
+	                          OR BYTE_TO_DWORD(#b0));
+END_FUNCTION
+
+FUNCTION "ISO_Scale8" : Real
+TITLE = '8-bit waarde schalen; >= 251 is fout/n.b.'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      raw : Byte;
+      factor : Real;
+      offset : Real;
+   END_VAR
+   VAR_OUTPUT
+      ok : Bool;
+   END_VAR
+
+BEGIN
+	IF BYTE_TO_USINT(#raw) >= 251 THEN
+	    #ok := FALSE;
+	    #ISO_Scale8 := 0.0;
+	ELSE
+	    #ok := TRUE;
+	    #ISO_Scale8 := USINT_TO_REAL(BYTE_TO_USINT(#raw)) * #factor + #offset;
+	END_IF;
+END_FUNCTION
+
+FUNCTION "ISO_Scale16" : Real
+TITLE = '16-bit waarde schalen; >= 64256 (0xFB00) is fout/n.b.'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      raw : UInt;
+      factor : Real;
+      offset : Real;
+   END_VAR
+   VAR_OUTPUT
+      ok : Bool;
+   END_VAR
+
+BEGIN
+	IF #raw >= 64256 THEN
+	    #ok := FALSE;
+	    #ISO_Scale16 := 0.0;
+	ELSE
+	    #ok := TRUE;
+	    #ISO_Scale16 := UINT_TO_REAL(#raw) * #factor + #offset;
+	END_IF;
+END_FUNCTION
+
+FUNCTION "ISO_StatRx" : Void
+TITLE = 'Ontvangst registreren'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      now : Time;
+      sa : Byte;
+   END_VAR
+   VAR_IN_OUT
+      stat : "typeIsoMsgStat";
+   END_VAR
+
+BEGIN
+	#stat.lastRx := #now;
+	#stat.sourceAddress := #sa;
+	#stat.rxCount := #stat.rxCount + 1;
+	#stat.valid := TRUE;
+END_FUNCTION
+
+FUNCTION "ISO_StatAge" : Void
+TITLE = 'Timeout bewaken'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      now : Time;
+      timeout : Time;
+   END_VAR
+   VAR_IN_OUT
+      stat : "typeIsoMsgStat";
+   END_VAR
+   VAR_TEMP
+      age : Time;
+   END_VAR
+
+BEGIN
+	IF #stat.rxCount = 0 THEN
+	    #stat.valid := FALSE;
+	ELSE
+	    #age := #now - #stat.lastRx;
+	    IF #age < T#0MS THEN   // TIME_TCK is na ~24,8 dagen teruggesprongen naar 0
+	        #age := #age + T#24D_20H_31M_23S_647MS;
+	    END_IF;
+	    #stat.valid := #age <= #timeout;
+	END_IF;
+END_FUNCTION
+
+FUNCTION "ISO_DecodeSpeed" : Void
+TITLE = 'PGN 65096 / 65097 / 61474'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      d : Array[0..7] of Byte;
+      kind : USInt;   // 0 = wheel-based, 1 = ground-based, 2 = machine selected
+   END_VAR
+   VAR_IN_OUT
+      s : "typeIsoSpeed";
+   END_VAR
+   VAR_TEMP
+      dist : UDInt;
+   END_VAR
+
+BEGIN
+	#s.speed_ms := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[0], hi := #d[1]), factor := 0.001, offset := 0.0, ok => #s.speedOk);
+	#s.speed_kmh := #s.speed_ms * 3.6;
+
+	#dist := "ISO_U32"(b0 := #d[2], b1 := #d[3], b2 := #d[4], b3 := #d[5]);
+	IF #dist >= 16#FB000000 THEN
+	    #s.distanceOk := FALSE;
+	    #s.distance_m := 0.0;
+	ELSE
+	    #s.distanceOk := TRUE;
+	    #s.distance_m := UDINT_TO_LREAL(#dist) * 0.001;
+	END_IF;
+
+	#s.direction := "ISO_Bits"(value := #d[7], startBit := 1, len := 2);
+
+	CASE #kind OF
+	    0:  // wheel-based
+	        #s.maxTimeTractorPower_min := BYTE_TO_USINT(#d[6]);
+	        #s.keySwitch := "ISO_Bits"(value := #d[7], startBit := 3, len := 2);
+	        #s.startStopState := "ISO_Bits"(value := #d[7], startBit := 5, len := 2);
+	        #s.operatorDirReversed := "ISO_Bits"(value := #d[7], startBit := 7, len := 2);
+	    2:  // machine selected speed
+	        #s.exitCode := "ISO_Bits"(value := #d[6], startBit := 1, len := 6);
+	        #s.speedSource := "ISO_Bits"(value := #d[7], startBit := 3, len := 3);
+	        #s.limitStatus := "ISO_Bits"(value := #d[7], startBit := 6, len := 3);
+	END_CASE;
+END_FUNCTION
+
+FUNCTION "ISO_DecodeHitch" : Void
+TITLE = 'PGN 65093 / 65094'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      d : Array[0..7] of Byte;
+   END_VAR
+   VAR_IN_OUT
+      h : "typeIsoHitch";
+   END_VAR
+
+BEGIN
+	#h.position_pct := "ISO_Scale8"(raw := #d[0], factor := 0.4, offset := 0.0, ok => #h.positionOk);
+	#h.limitStatus := "ISO_Bits"(value := #d[1], startBit := 4, len := 3);
+	#h.inWork := "ISO_Bits"(value := #d[1], startBit := 7, len := 2);
+	#h.nominalLinkForce_pct := "ISO_Scale8"(raw := #d[2], factor := 0.8, offset := -100.0, ok => #h.nominalLinkForceOk);
+	#h.draft_N := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[3], hi := #d[4]), factor := 10.0, offset := -320000.0, ok => #h.draftOk);
+	#h.exitCode := "ISO_Bits"(value := #d[5], startBit := 1, len := 6);
+END_FUNCTION
+
+FUNCTION "ISO_DecodePto" : Void
+TITLE = 'PGN 65091 / 65092'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      d : Array[0..7] of Byte;
+   END_VAR
+   VAR_IN_OUT
+      p : "typeIsoPto";
+   END_VAR
+
+BEGIN
+	#p.speed_rpm := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[0], hi := #d[1]), factor := 0.125, offset := 0.0, ok => #p.speedOk);
+	#p.setpoint_rpm := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[2], hi := #d[3]), factor := 0.125, offset := 0.0, ok => #p.setpointOk);
+	#p.engagementReqStatus := "ISO_Bits"(value := #d[4], startBit := 1, len := 2);
+	#p.economyMode := "ISO_Bits"(value := #d[4], startBit := 3, len := 2);
+	#p.mode1000 := "ISO_Bits"(value := #d[4], startBit := 5, len := 2);
+	#p.engaged := "ISO_Bits"(value := #d[4], startBit := 7, len := 2);
+	#p.speedLimitStatus := "ISO_Bits"(value := #d[5], startBit := 2, len := 3);
+	#p.economyReqStatus := "ISO_Bits"(value := #d[5], startBit := 5, len := 2);
+	#p.modeReqStatus := "ISO_Bits"(value := #d[5], startBit := 7, len := 2);
+	#p.exitCode := "ISO_Bits"(value := #d[6], startBit := 1, len := 6);
+END_FUNCTION
+
+FUNCTION "ISO_DecodeAuxFlow" : Void
+TITLE = 'PGN 65040..65055 Auxiliary Valve Estimated Flow'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      d : Array[0..7] of Byte;
+   END_VAR
+   VAR_IN_OUT
+      v : "typeIsoAuxFlow";
+   END_VAR
+
+BEGIN
+	#v.extendFlow_pct := "ISO_Scale8"(raw := #d[0], factor := 1.0, offset := -125.0, ok => #v.extendOk);
+	#v.retractFlow_pct := "ISO_Scale8"(raw := #d[1], factor := 1.0, offset := -125.0, ok => #v.retractOk);
+	#v.valveState := "ISO_Bits"(value := #d[2], startBit := 1, len := 4);   // NIET GEVERIFIEERD
+	#v.failSafeMode := "ISO_Bits"(value := #d[2], startBit := 7, len := 2);   // NIET GEVERIFIEERD
+END_FUNCTION
+
+FUNCTION_BLOCK "ISO_TractorDecode"
+TITLE = 'ISOBUS/J1939 standaard tractorberichten decoderen'
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Claude'
+FAMILY : ISOBUS
+VERSION : 0.1
+//Roep elke PLC-cyclus aan. Staat er een ontvangen frame klaar, zet dan newFrame := TRUE
+//en geef ID, lengte en data mee. Meerdere frames per cyclus: FB meerdere keren aanroepen.
+   VAR_INPUT
+      newFrame : Bool;   // TRUE = frame op de ingangen verwerken (één frame per aanroep)
+      frameId : DWord;   // CAN-identifier (29-bit)
+      frameExtended : Bool;   // TRUE = 29-bit frame (11-bit frames worden genegeerd)
+      frameLength : USInt;   // DLC 0..8
+      frameData : Array[0..7] of Byte;
+      filterSa : Byte := 16#FF;   // 16#FF = alle bronadressen, anders alleen dit adres (bv. 16#F0 = TECU)
+      timeoutFast : Time := T#500MS;   // berichten van 100 ms
+      timeoutSlow : Time := T#3S;   // navigatieberichten
+   END_VAR
+
+   VAR_OUTPUT
+      frameDecoded : Bool;   // TRUE = laatste frame was een herkend standaardbericht
+   END_VAR
+
+   VAR_IN_OUT
+      tractor : "typeIsoTractor";
+   END_VAR
+
+   VAR_TEMP
+      now : Time;
+      d : Array[0..7] of Byte;
+      i : Int;
+      pf : USInt;
+      sa : Byte;
+      pgn : DWord;
+      pgnNum : DInt;
+      u32 : UDInt;
+      okLat : Bool;
+      okLon : Bool;
+   END_VAR
+
+
+BEGIN
+	REGION Tijd
+	    #now := TIME_TCK();
+	    #frameDecoded := FALSE;
+	END_REGION
+
+	REGION Frame verwerken
+	    IF #newFrame THEN
+	        #tractor.diag.framesIn := #tractor.diag.framesIn + 1;
+
+	        // data kopiëren; ontbrekende bytes = 16#FF (n.b.)
+	        FOR #i := 0 TO 7 DO
+	            IF #i < USINT_TO_INT(#frameLength) THEN
+	                #d[#i] := #frameData[#i];
+	            ELSE
+	                #d[#i] := 16#FF;
+	            END_IF;
+	        END_FOR;
+
+	        // PGN en bronadres uit de identifier
+	        #pf := DWORD_TO_USINT(SHR(IN := #frameId, N := 16) AND 16#FF);
+	        #sa := DWORD_TO_BYTE(#frameId AND 16#FF);
+	        IF #pf < 240 THEN   // PDU1: PS = bestemmingsadres
+	            #pgn := SHR(IN := #frameId, N := 8) AND 16#3FF00;
+	        ELSE   // PDU2: broadcast
+	            #pgn := SHR(IN := #frameId, N := 8) AND 16#3FFFF;
+	        END_IF;
+	        #pgnNum := DWORD_TO_DINT(#pgn);
+	        #tractor.diag.lastPgn := #pgn;
+	        #tractor.diag.lastSourceAddress := #sa;
+
+	        IF NOT #frameExtended OR (#filterSa <> 16#FF AND #sa <> #filterSa) THEN
+	            #pgnNum := -1;   // negeren
+	        END_IF;
+
+	        #frameDecoded := TRUE;
+	        CASE #pgnNum OF
+	            61444:  // 0xF004 EEC1
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.engine.stat);
+	                #tractor.engine.driverDemandTorque_pct := "ISO_Scale8"(raw := #d[1], factor := 1.0, offset := -125.0, ok => #tractor.engine.driverDemandTorqueOk);
+	                #tractor.engine.actualTorque_pct := "ISO_Scale8"(raw := #d[2], factor := 1.0, offset := -125.0, ok => #tractor.engine.actualTorqueOk);
+	                #tractor.engine.speed_rpm := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[3], hi := #d[4]), factor := 0.125, offset := 0.0, ok => #tractor.engine.speedOk);
+	                #tractor.engine.starterMode := "ISO_Bits"(value := #d[6], startBit := 1, len := 4);
+
+	            65096:  // 0xFE48 Wheel-based Speed and Distance
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.wheelSpeed.stat);
+	                "ISO_DecodeSpeed"(d := #d, kind := 0, s := #tractor.wheelSpeed);
+
+	            65097:  // 0xFE49 Ground-based Speed and Distance
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.groundSpeed.stat);
+	                "ISO_DecodeSpeed"(d := #d, kind := 1, s := #tractor.groundSpeed);
+
+	            61474:  // 0xF022 Machine Selected Speed
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.selectedSpeed.stat);
+	                "ISO_DecodeSpeed"(d := #d, kind := 2, s := #tractor.selectedSpeed);
+
+	            65093:  // 0xFE45 Rear Hitch Status
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.rearHitch.stat);
+	                "ISO_DecodeHitch"(d := #d, h := #tractor.rearHitch);
+
+	            65094:  // 0xFE46 Front Hitch Status
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.frontHitch.stat);
+	                "ISO_DecodeHitch"(d := #d, h := #tractor.frontHitch);
+
+	            65091:  // 0xFE43 Rear PTO Output Shaft
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.rearPto.stat);
+	                "ISO_DecodePto"(d := #d, p := #tractor.rearPto);
+
+	            65092:  // 0xFE44 Front PTO Output Shaft
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.frontPto.stat);
+	                "ISO_DecodePto"(d := #d, p := #tractor.frontPto);
+
+	            65040..65055:  // 0xFE10..0xFE1F Aux Valve 0..15 Estimated Flow
+	                #i := DINT_TO_INT(#pgnNum - 65040);
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.auxValveFlow[#i].stat);
+	                "ISO_DecodeAuxFlow"(d := #d, v := #tractor.auxValveFlow[#i]);
+
+	            65267:  // 0xFEF3 Vehicle Position
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.vehiclePosition.stat);
+	                #u32 := "ISO_U32"(b0 := #d[0], b1 := #d[1], b2 := #d[2], b3 := #d[3]);
+	                #okLat := #u32 < 16#FB000000;
+	                IF #okLat THEN
+	                    #tractor.vehiclePosition.latitude_deg := UDINT_TO_LREAL(#u32) * 1.0E-7 - 210.0;
+	                END_IF;
+	                #u32 := "ISO_U32"(b0 := #d[4], b1 := #d[5], b2 := #d[6], b3 := #d[7]);
+	                #okLon := #u32 < 16#FB000000;
+	                IF #okLon THEN
+	                    #tractor.vehiclePosition.longitude_deg := UDINT_TO_LREAL(#u32) * 1.0E-7 - 210.0;
+	                END_IF;
+	                #tractor.vehiclePosition.positionOk := #okLat AND #okLon;
+
+	            65256:  // 0xFEE8 Vehicle Direction/Speed
+	                "ISO_StatRx"(now := #now, sa := #sa, stat := #tractor.vehicleDirSpeed.stat);
+	                #tractor.vehicleDirSpeed.heading_deg := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[0], hi := #d[1]), factor := 0.0078125, offset := 0.0, ok => #tractor.vehicleDirSpeed.headingOk);
+	                #tractor.vehicleDirSpeed.speed_kmh := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[2], hi := #d[3]), factor := 0.00390625, offset := 0.0, ok => #tractor.vehicleDirSpeed.speedOk);
+	                #tractor.vehicleDirSpeed.pitch_deg := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[4], hi := #d[5]), factor := 0.0078125, offset := -200.0, ok => #tractor.vehicleDirSpeed.pitchOk);
+	                #tractor.vehicleDirSpeed.altitude_m := "ISO_Scale16"(raw := "ISO_U16"(lo := #d[6], hi := #d[7]), factor := 0.125, offset := -2500.0, ok => #tractor.vehicleDirSpeed.altitudeOk);
+
+	            ELSE
+	                #frameDecoded := FALSE;
+	        END_CASE;
+
+	        IF #frameDecoded THEN
+	            #tractor.diag.framesDecoded := #tractor.diag.framesDecoded + 1;
+	        ELSE
+	            #tractor.diag.framesIgnored := #tractor.diag.framesIgnored + 1;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Timeouts bewaken
+	    "ISO_StatAge"(now := #now, timeout := #timeoutFast, stat := #tractor.engine.stat);
+	    "ISO_StatAge"(now := #now, timeout := #timeoutFast, stat := #tractor.wheelSpeed.stat);
+	    "ISO_StatAge"(now := #now, timeout := #timeoutFast, stat := #tractor.groundSpeed.stat);
+	    "ISO_StatAge"(now := #now, timeout := #timeoutFast, stat := #tractor.selectedSpeed.stat);
+	    "ISO_StatAge"(now := #now, timeout := #timeoutFast, stat := #tractor.rearHitch.stat);
+	    "ISO_StatAge"(now := #now, timeout := #timeoutFast, stat := #tractor.frontHitch.stat);
+	    "ISO_StatAge"(now := #now, timeout := #timeoutFast, stat := #tractor.rearPto.stat);
+	    "ISO_StatAge"(now := #now, timeout := #timeoutFast, stat := #tractor.frontPto.stat);
+	    FOR #i := 0 TO 15 DO
+	        // ventielen 7 en hoger komen soms maar 1×/s: daarom de trage timeout
+	        "ISO_StatAge"(now := #now, timeout := #timeoutSlow, stat := #tractor.auxValveFlow[#i].stat);
+	    END_FOR;
+	    "ISO_StatAge"(now := #now, timeout := #timeoutSlow, stat := #tractor.vehiclePosition.stat);
+	    "ISO_StatAge"(now := #now, timeout := #timeoutSlow, stat := #tractor.vehicleDirSpeed.stat);
+	END_REGION
+END_FUNCTION_BLOCK

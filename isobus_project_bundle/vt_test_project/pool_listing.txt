@@ -1,0 +1,20 @@
+VT test pool – 119 bytes
+
+offset    0  object     0  Working Set       18 bytes  achtergrond 1, actief masker 1000, kinderen [(11001, 0, 0)], talen ['en']
+              00 00 00 01 01 E8 03 01 00 01 F9 2A 00 00 00 00 65 6E
+
+offset   18  object  1000  Data Mask         14 bytes  achtergrond 1, softkeymasker 65535 (65535 = geen), kinderen [(11000, 20, 40)]
+              E8 03 01 01 FF FF 01 00 F8 2A 14 00 28 00
+
+offset   32  object 11000  Output String     49 bytes  400x40, font 23000, tekst "Hallo vanuit S7-1500" (lengte 32)
+              F8 2A 0B 90 01 28 00 01 D8 59 00 FF FF 01 20 00 48 61 6C 6C 6F 20 76 61 6E 75 69 74 20 53 37 2D 31 35 30 30 20 20 20 20 20 20 20 20 20 20 20 20 00
+
+offset   81  object 11001  Output String     22 bytes  60x32, font 23001, tekst "S7 VT" (lengte 5)
+              F9 2A 0B 3C 00 20 00 01 D9 59 00 FF FF 01 05 00 53 37 20 56 54 00
+
+offset  103  object 23000  Font Attributes    8 bytes  kleur 0, grootte-code 3, ISO 8859-1
+              D8 59 17 00 03 00 00 00
+
+offset  111  object 23001  Font Attributes    8 bytes  kleur 0, grootte-code 2, ISO 8859-1
+              D9 59 17 00 02 00 00 00
+

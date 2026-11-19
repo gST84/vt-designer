@@ -1,0 +1,53 @@
+// =====================================================================
+//  VT-testclient – PLC-datatypes. Eerst importeren.
+//  Versie 0.1 – 2026-11-19
+// =====================================================================
+
+TYPE "typeVtTxFrame"
+VERSION : 0.1
+   STRUCT
+      id : DWord;   // 29-bit CAN-identifier
+      data : Array[0..7] of Byte;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtTxQueue"
+VERSION : 0.1
+   STRUCT
+      frame : Array[0..31] of "typeVtTxFrame";
+      head : Int;   // index van het volgende te verzenden frame
+      count : Int;   // aantal frames in de wachtrij
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtDiag"
+VERSION : 0.1
+   STRUCT
+      stateText : String[40];   // leesbare toestand
+      vtSeen : Bool;   // VT Status ontvangen
+      vtAddress : Byte;   // bronadres van de terminal
+      vtVersion : USInt;   // VT-versie uit Get Memory-antwoord
+      onScreen : Bool;   // terminal toont onze werkset (VT Status byte 2 = ons adres)
+      vtActiveMask : UInt;   // actief masker volgens VT Status
+      memoryOk : Bool;
+      poolChunk : UInt;   // deel van de pool dat verstuurd wordt (1 = eerste)
+      poolChunks : UInt;   // aantal delen van de pool
+      dataMaskWidth : UInt;   // uit Get Hardware (0 = geen antwoord)
+      dataMaskHeight : UInt;
+      eopErrorCodes : Byte;   // End of Object Pool: byte 2 (0 = OK)
+      eopFaultyParent : UInt;
+      eopFaultyObject : UInt;
+      eopPoolErrors : Byte;
+      tpAbortReason : Byte;   // reden van laatste TP-abort
+      stringError : Byte;   // antwoord op Change String Value (0 = OK)
+      filterStatus : Word;   // status LCan_SetTransparentFilter
+      rcvStatus : Word;   // status LCan_RcvTransparentMessage
+      sendStatus : Word;   // status LCan_SendTransparentMessage
+      rxFrames : UDInt;
+      txFrames : UDInt;
+      txOverflow : UDInt;   // frames die niet in de wachtrij pasten
+   END_STRUCT;
+
+END_TYPE

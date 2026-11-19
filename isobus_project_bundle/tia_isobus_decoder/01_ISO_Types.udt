@@ -1,0 +1,164 @@
+// =====================================================================
+//  ISOBUS / J1939 tractorberichten – PLC-datatypes
+//  Importeren in TIA Portal: Externe bronnen > Bron toevoegen > dit bestand
+//  > rechtsklik > "Blokken genereren uit bron". Dit bestand VOOR het .scl-bestand.
+//  Versie 0.1 – 2026-11-18
+// =====================================================================
+
+TYPE "typeIsoMsgStat"
+VERSION : 0.1
+   STRUCT
+      valid : Bool;   // TRUE = bericht ontvangen binnen de timeout
+      sourceAddress : Byte;   // bronadres van het laatst ontvangen bericht
+      rxCount : UDInt;   // aantal ontvangen berichten
+      lastRx : Time;   // intern: TIME_TCK op moment van laatste ontvangst
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoEngine"
+VERSION : 0.1
+   STRUCT
+      stat : "typeIsoMsgStat";   // PGN 61444 (0xF004) EEC1
+      speed_rpm : Real;   // motortoerental, bytes 4-5, 0,125 rpm/bit
+      speedOk : Bool;
+      actualTorque_pct : Real;   // werkelijk motorkoppel, byte 3, 1 %/bit, offset -125
+      actualTorqueOk : Bool;
+      driverDemandTorque_pct : Real;   // gevraagd koppel bestuurder, byte 2
+      driverDemandTorqueOk : Bool;
+      starterMode : USInt := 15;   // byte 7 bits 1-4 (15 = n.b.)
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoSpeed"
+VERSION : 0.1
+   STRUCT
+      stat : "typeIsoMsgStat";
+      speed_ms : Real;   // bytes 1-2, 0,001 m/s per bit
+      speed_kmh : Real;
+      speedOk : Bool;
+      distance_m : LReal;   // bytes 3-6, 0,001 m per bit
+      distanceOk : Bool;
+      direction : USInt := 3;   // 0 = achteruit, 1 = vooruit, 2 = fout, 3 = n.b.
+      // alleen Wheel-based Speed (PGN 65096)
+      maxTimeTractorPower_min : USInt := 255;   // byte 7 (>250 = n.b.)
+      keySwitch : USInt := 3;   // 0 = uit, 1 = niet uit, 2 = fout, 3 = n.b.
+      startStopState : USInt := 3;   // 0 = stop, 1 = start, 2 = fout, 3 = n.b.
+      operatorDirReversed : USInt := 3;   // 0 = niet omgekeerd, 1 = omgekeerd
+      // alleen Machine Selected Speed (PGN 61474)
+      speedSource : USInt := 7;   // 0 wiel, 1 grond, 2 navigatie, 3 gemengd, 4 gesimuleerd, 7 n.b.
+      limitStatus : USInt := 7;   // 0 niet begrensd ... 7 n.b.
+      exitCode : USInt := 63;   // exit/reason code (63 = n.b.)
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoHitch"
+VERSION : 0.1
+   STRUCT
+      stat : "typeIsoMsgStat";   // PGN 65093 achter / 65094 voor
+      position_pct : Real;   // byte 1, 0,4 %/bit
+      positionOk : Bool;
+      inWork : USInt := 3;   // byte 2 bits 7-8: 0 uit werkstand, 1 in werkstand
+      limitStatus : USInt := 7;   // byte 2 bits 4-6
+      nominalLinkForce_pct : Real;   // byte 3, 0,8 %/bit, offset -100
+      nominalLinkForceOk : Bool;
+      draft_N : Real;   // bytes 4-5, 10 N/bit, offset -320000
+      draftOk : Bool;
+      exitCode : USInt := 63;   // byte 6 bits 1-6
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoPto"
+VERSION : 0.1
+   STRUCT
+      stat : "typeIsoMsgStat";   // PGN 65091 achter / 65092 voor
+      speed_rpm : Real;   // bytes 1-2, 0,125 rpm/bit
+      speedOk : Bool;
+      setpoint_rpm : Real;   // bytes 3-4, 0,125 rpm/bit
+      setpointOk : Bool;
+      engagementReqStatus : USInt := 3;   // byte 5 bits 1-2
+      economyMode : USInt := 3;   // byte 5 bits 3-4: 0 uit, 1 aan
+      mode1000 : USInt := 3;   // byte 5 bits 5-6: 0 = 540, 1 = 1000 rpm
+      engaged : USInt := 3;   // byte 5 bits 7-8: 0 uit, 1 ingeschakeld
+      speedLimitStatus : USInt := 7;   // byte 6 bits 2-4 (controleren, zie README)
+      economyReqStatus : USInt := 3;   // byte 6 bits 5-6
+      modeReqStatus : USInt := 3;   // byte 6 bits 7-8
+      exitCode : USInt := 63;   // byte 7 bits 1-6
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoAuxFlow"
+VERSION : 0.1
+   STRUCT
+      stat : "typeIsoMsgStat";   // PGN 65040..65055 Aux Valve 0..15 Estimated Flow
+      extendFlow_pct : Real;   // byte 1, 1 %/bit, offset -125
+      extendOk : Bool;
+      retractFlow_pct : Real;   // byte 2, 1 %/bit, offset -125
+      retractOk : Bool;
+      valveState : USInt := 15;   // byte 3 bits 1-4: 0 geblokkeerd, 1 extend, 2 retract, 3 zweven (NIET GEVERIFIEERD)
+      failSafeMode : USInt := 3;   // byte 3 bits 7-8 (NIET GEVERIFIEERD)
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoPosition"
+VERSION : 0.1
+   STRUCT
+      stat : "typeIsoMsgStat";   // PGN 65267 (0xFEF3) Vehicle Position
+      latitude_deg : LReal;   // bytes 1-4, 1e-7 °/bit, offset -210
+      longitude_deg : LReal;   // bytes 5-8, 1e-7 °/bit, offset -210
+      positionOk : Bool;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoNavDir"
+VERSION : 0.1
+   STRUCT
+      stat : "typeIsoMsgStat";   // PGN 65256 (0xFEE8) Vehicle Direction/Speed
+      heading_deg : Real;   // bytes 1-2, 1/128 °/bit
+      headingOk : Bool;
+      speed_kmh : Real;   // bytes 3-4, 1/256 km/h per bit
+      speedOk : Bool;
+      pitch_deg : Real;   // bytes 5-6, 1/128 °/bit, offset -200
+      pitchOk : Bool;
+      altitude_m : Real;   // bytes 7-8, 0,125 m/bit, offset -2500
+      altitudeOk : Bool;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoDiag"
+VERSION : 0.1
+   STRUCT
+      framesIn : UDInt;   // alle aangeboden frames
+      framesDecoded : UDInt;   // herkende standaardberichten
+      framesIgnored : UDInt;   // 11-bit, ander bronadres of onbekende PGN
+      lastPgn : DWord;
+      lastSourceAddress : Byte;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeIsoTractor"
+VERSION : 0.1
+   STRUCT
+      engine : "typeIsoEngine";   // PGN 61444
+      wheelSpeed : "typeIsoSpeed";   // PGN 65096
+      groundSpeed : "typeIsoSpeed";   // PGN 65097
+      selectedSpeed : "typeIsoSpeed";   // PGN 61474
+      rearHitch : "typeIsoHitch";   // PGN 65093
+      frontHitch : "typeIsoHitch";   // PGN 65094
+      rearPto : "typeIsoPto";   // PGN 65091
+      frontPto : "typeIsoPto";   // PGN 65092
+      auxValveFlow : Array[0..15] of "typeIsoAuxFlow";   // PGN 65040..65055
+      vehiclePosition : "typeIsoPosition";   // PGN 65267
+      vehicleDirSpeed : "typeIsoNavDir";   // PGN 65256
+      diag : "typeIsoDiag";
+   END_STRUCT;
+
+END_TYPE

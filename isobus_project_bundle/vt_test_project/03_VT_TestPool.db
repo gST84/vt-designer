@@ -1,0 +1,51 @@
+// =====================================================================
+//  VT_TestPool – gegenereerd door tools/make_pool.py
+//  119 bytes, 6 objecten. Niet met de hand aanpassen: opnieuw genereren.
+//  Objecten: 0 Working Set, 1000 Data Mask, 11000 Output String, 11001 Output String, 23000 Font Attributes, 23001 Font Attributes
+// =====================================================================
+DATA_BLOCK "VT_TestPool"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+   VAR 
+      size : UDInt;   // aantal bytes in data
+      chunkCount : UInt;   // aantal Object Pool Transfer-delen (elk enkel hele objecten)
+      chunkStart : Array[0..0] of UDInt;   // beginindex van elk deel in data
+      chunkLength : Array[0..0] of UInt;   // lengte van elk deel
+      textObjectId : UInt;   // Output String die de PLC mag wijzigen
+      textMaxLength : UInt;   // vaste lengte van die Output String
+      data : Array[0..118] of Byte;
+   END_VAR
+
+
+BEGIN
+   size := 119;
+   chunkCount := 1;   // deze pool past in één TP-overdracht
+   chunkStart[0] := 0; chunkLength[0] := 119;
+   textObjectId := 11000;
+   textMaxLength := 32;
+   // ---- object 0: Working Set (18 bytes) – achtergrond 1, actief masker 1000, kinderen [(11001, 0, 0)], talen ['en']
+   data[0] := 16#00; data[1] := 16#00; data[2] := 16#00; data[3] := 16#01; data[4] := 16#01; data[5] := 16#E8; data[6] := 16#03; data[7] := 16#01;
+   data[8] := 16#00; data[9] := 16#01; data[10] := 16#F9; data[11] := 16#2A; data[12] := 16#00; data[13] := 16#00; data[14] := 16#00; data[15] := 16#00;
+   data[16] := 16#65; data[17] := 16#6E;
+   // ---- object 1000: Data Mask (14 bytes) – achtergrond 1, softkeymasker 65535 (65535 = geen), kinderen [(11000, 20, 40)]
+   data[18] := 16#E8; data[19] := 16#03; data[20] := 16#01; data[21] := 16#01; data[22] := 16#FF; data[23] := 16#FF; data[24] := 16#01; data[25] := 16#00;
+   data[26] := 16#F8; data[27] := 16#2A; data[28] := 16#14; data[29] := 16#00; data[30] := 16#28; data[31] := 16#00;
+   // ---- object 11000: Output String (49 bytes) – 400x40, font 23000, tekst "Hallo vanuit S7-1500" (lengte 32)
+   data[32] := 16#F8; data[33] := 16#2A; data[34] := 16#0B; data[35] := 16#90; data[36] := 16#01; data[37] := 16#28; data[38] := 16#00; data[39] := 16#01;
+   data[40] := 16#D8; data[41] := 16#59; data[42] := 16#00; data[43] := 16#FF; data[44] := 16#FF; data[45] := 16#01; data[46] := 16#20; data[47] := 16#00;
+   data[48] := 16#48; data[49] := 16#61; data[50] := 16#6C; data[51] := 16#6C; data[52] := 16#6F; data[53] := 16#20; data[54] := 16#76; data[55] := 16#61;
+   data[56] := 16#6E; data[57] := 16#75; data[58] := 16#69; data[59] := 16#74; data[60] := 16#20; data[61] := 16#53; data[62] := 16#37; data[63] := 16#2D;
+   data[64] := 16#31; data[65] := 16#35; data[66] := 16#30; data[67] := 16#30; data[68] := 16#20; data[69] := 16#20; data[70] := 16#20; data[71] := 16#20;
+   data[72] := 16#20; data[73] := 16#20; data[74] := 16#20; data[75] := 16#20; data[76] := 16#20; data[77] := 16#20; data[78] := 16#20; data[79] := 16#20;
+   data[80] := 16#00;
+   // ---- object 11001: Output String (22 bytes) – 60x32, font 23001, tekst "S7 VT" (lengte 5)
+   data[81] := 16#F9; data[82] := 16#2A; data[83] := 16#0B; data[84] := 16#3C; data[85] := 16#00; data[86] := 16#20; data[87] := 16#00; data[88] := 16#01;
+   data[89] := 16#D9; data[90] := 16#59; data[91] := 16#00; data[92] := 16#FF; data[93] := 16#FF; data[94] := 16#01; data[95] := 16#05; data[96] := 16#00;
+   data[97] := 16#53; data[98] := 16#37; data[99] := 16#20; data[100] := 16#56; data[101] := 16#54; data[102] := 16#00;
+   // ---- object 23000: Font Attributes (8 bytes) – kleur 0, grootte-code 3, ISO 8859-1
+   data[103] := 16#D8; data[104] := 16#59; data[105] := 16#17; data[106] := 16#00; data[107] := 16#03; data[108] := 16#00; data[109] := 16#00; data[110] := 16#00;
+   // ---- object 23001: Font Attributes (8 bytes) – kleur 0, grootte-code 2, ISO 8859-1
+   data[111] := 16#D9; data[112] := 16#59; data[113] := 16#17; data[114] := 16#00; data[115] := 16#02; data[116] := 16#00; data[117] := 16#00; data[118] := 16#00;
+
+END_DATA_BLOCK

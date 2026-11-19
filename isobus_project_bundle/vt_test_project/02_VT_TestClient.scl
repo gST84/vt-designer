@@ -1,0 +1,600 @@
+// =====================================================================
+//  VT-testclient: S7-1500 + ET 200SP CM CAN als ISOBUS-werkset
+//  Zet één scherm met een tekst op de terminal (VT) en kan die tekst wijzigen.
+//
+//  Vereist: Siemens-bibliotheek LCan (LCan_SetTransparentFilter,
+//  LCan_RcvTransparentMessage, LCan_SendTransparentMessage) en 01_VT_Types.udt.
+//  Protocol: ISO 11783-5 (address claim), -3 (TP), -6 (Virtual Terminal).
+//  Versie 0.2 – 2026-11-19 – pool in delen (meerdere Object Pool Transfers, elk ≤ 1784 bytes).
+//  Testcode, niet gecompileerd bij het schrijven.
+// =====================================================================
+
+FUNCTION "VT_Elapsed" : Time
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      since : Time;
+      now : Time;
+   END_VAR
+   VAR_TEMP
+      t : Time;
+   END_VAR
+
+BEGIN
+	#t := #now - #since;
+	IF #t < T#0MS THEN   // TIME_TCK is teruggesprongen naar 0
+	    #t := #t + T#24D_20H_31M_23S_647MS;
+	END_IF;
+	#VT_Elapsed := #t;
+END_FUNCTION
+
+FUNCTION "VT_Push" : Bool
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol)'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      id : DWord;
+      data : Array[0..7] of Byte;
+   END_VAR
+   VAR_IN_OUT
+      q : "typeVtTxQueue";
+   END_VAR
+   VAR_TEMP
+      idx : Int;
+   END_VAR
+
+BEGIN
+	IF #q.count >= 32 THEN
+	    #VT_Push := FALSE;
+	ELSE
+	    #idx := (#q.head + #q.count) MOD 32;
+	    #q.frame[#idx].id := #id;
+	    #q.frame[#idx].data := #data;
+	    #q.count := #q.count + 1;
+	    #VT_Push := TRUE;
+	END_IF;
+END_FUNCTION
+
+FUNCTION_BLOCK "VT_TestClient"
+TITLE = 'ISOBUS VT-testclient: één tekst op de terminal'
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Claude'
+FAMILY : ISOBUS
+VERSION : 0.2
+//Elke cyclus aanroepen. enable = TRUE start: filter zetten, address claim, wachten op de VT,
+//pool uploaden. Daarna running = TRUE. Positieve flank op sendText stuurt 'text' naar het scherm.
+   VAR_INPUT
+      enable : Bool;   // TRUE = werkset actief, positieve flank = (her)start
+      myAddress : Byte := 16#90;   // ons bronadres (moet vrij zijn op de bus)
+      vtAddress : Byte := 16#80;   // adres van de terminal
+      canStatus : Byte;   // statusbyte van de CM CAN (zelfde als bij de CANConfig)
+      hwIdCmCan : HW_IO;   // hardware-ID van de CM CAN (systeemconstante)
+      rxProxyIndex : Byte := 2;   // nummer van de receive proxy voor VT-verkeer
+      poolSize : UDInt;   // aantal bytes in 'pool' (pool-DB .size)
+      chunkCount : UInt;   // aantal delen = Object Pool Transfer-berichten (pool-DB .chunkCount)
+      textObjectId : UInt := 11000;   // Output String die de PLC wijzigt
+      textMaxLength : UInt := 32;   // vaste lengte van die Output String
+      text : String[32];   // nieuwe tekst
+      sendText : Bool;   // positieve flank = tekst naar het scherm sturen
+   END_VAR
+
+   VAR_OUTPUT
+      running : Bool;   // pool geladen, werkset actief
+      error : Bool;   // gestopt met fout: zie diag
+      state : Int;
+      diag : "typeVtDiag";
+   END_VAR
+
+   VAR_IN_OUT
+      pool : Array[*] of Byte;   // binaire object pool (pool-DB .data)
+      chunkStart : Array[*] of UDInt;   // beginindex van elk deel in 'pool' (pool-DB .chunkStart)
+      chunkLength : Array[*] of UInt;   // lengte van elk deel, 1..1784 bytes, enkel hele objecten (pool-DB .chunkLength)
+      rxProxyIn : "LCan_typeRcvInTransparentMessage";   // I-bereik receive proxy (VT)
+      rxProxyOut : "LCan_typeRcvOutTransparentMessage";   // Q-bereik receive proxy (VT)
+      txProxyIn : "LCan_typeSendInTransparentMessage";   // I-bereik transmit proxy
+      txProxyOut : "LCan_typeSendOutTransparentMessage";   // Q-bereik transmit proxy
+   END_VAR
+
+   VAR
+      setFilter : "LCan_SetTransparentFilter";
+      rcv : "LCan_RcvTransparentMessage";
+      snd : "LCan_SendTransparentMessage";
+      filters : Array[0..15] of "LCan_typeTransparentFilter";
+      filterExec : Bool;
+      rxData : Array[0..7] of Byte;
+      rxAck : Bool;
+      txData : Array[0..7] of Byte;
+      txId : DWord;
+      txExec : Bool;
+      txState : Int;
+      q : "typeVtTxQueue";
+      ff8 : Array[0..7] of Byte := [8(16#FF)];
+      isoName : Array[0..7] of Byte := [16#39, 16#30, 16#00, 16#00, 16#00, 16#81, 16#00, 16#20];   // 64-bit ISO NAME: identiteit 12345, fabrikant 0, functie 129, industriegroep 2
+      vtVersionForPool : Byte := 16#03;   // VT-versie waarvoor de pool gemaakt is
+      st : Int;
+      tState : Time;
+      tMaint : Time;
+      tVtStatus : Time;
+      tTp : Time;
+      edgeEnable : Bool;
+      edgeText : Bool;
+      pendingText : Bool;
+      memResp : Bool;
+      hwResp : Bool;
+      eopResp : Bool;
+      strResp : Bool;
+      // transport protocol (zender)
+      tpBuf : Array[0..1784] of Byte;
+      tpLen : UInt;
+      tpPackets : Int;
+      tpNext : Int;
+      tpEnd : Int;
+      tpState : Int;   // 0 vrij, 1 start, 2 wacht CTS, 3 DT zenden, 5 klaar, 9 fout
+      chunkIdx : UInt;   // deel van de pool dat nu verstuurd wordt (0 = eerste)
+   END_VAR
+
+   VAR_TEMP
+      now : Time;
+      d : Array[0..7] of Byte;
+      i : Int;
+      k : Int;
+      idx : Int;
+      n : Int;
+      textLen : Int;
+      lb : DInt;
+      j : DInt;
+      chStart : UDInt;
+      chLen : UInt;
+      total : UDInt;
+      pf : Byte;
+      ps : Byte;
+      sa : Byte;
+      idVtCmd : DWord;   // ECU → VT (PGN 0xE700), prioriteit 7
+      idTpCm : DWord;   // TP.CM naar de VT
+      idTpDt : DWord;   // TP.DT naar de VT
+      ok : Bool;
+   END_VAR
+
+
+BEGIN
+	REGION Voorbereiding
+	    #now := TIME_TCK();
+	    #idVtCmd := 16#1CE70000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idTpCm := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idTpDt := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+
+	    IF #enable AND NOT #edgeEnable THEN   // (her)start
+	        #st := 1;
+	        #q.head := 0;
+	        #q.count := 0;
+	        #tpState := 0;
+	        #txState := 0;
+	        #txExec := FALSE;
+	        #pendingText := FALSE;
+	        #diag.vtSeen := FALSE;
+	        #diag.onScreen := FALSE;
+	    ELSIF NOT #enable THEN
+	        #st := 0;
+	        #q.count := 0;
+	        #tpState := 0;
+	    END_IF;
+	    #edgeEnable := #enable;
+
+	    IF #sendText AND NOT #edgeText THEN
+	        #pendingText := TRUE;
+	    END_IF;
+	    #edgeText := #sendText;
+	END_REGION
+
+	REGION Ontvangstfilter (receive proxy voor VT-verkeer)
+	    IF #st = 1 THEN
+	        FOR #i := 0 TO 15 DO
+	            #filters[#i].ignoreFilter := TRUE;
+	            #filters[#i].messageFilter := 1;   // alleen dataframes
+	            #filters[#i].messageIdFormat := 2;   // alleen 29-bit
+	            #filters[#i].messageId := 16#0;
+	        END_FOR;
+	        // VT Status van de terminal aan iedereen
+	        #filters[0].messageId := 16#1CE6FF00 OR BYTE_TO_DWORD(#vtAddress);
+	        // VT → ons (prioriteit 7 en 6)
+	        #filters[1].messageId := 16#1CE60000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[2].messageId := 16#18E60000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        // TP.CM van de VT naar ons (CTS, EoMA, abort)
+	        #filters[3].messageId := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[4].messageId := 16#18EC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        FOR #i := 0 TO 4 DO
+	            #filters[#i].ignoreFilter := FALSE;
+	        END_FOR;
+	        #filterExec := TRUE;
+	        #st := 2;
+	        #tState := #now;
+	    END_IF;
+
+	    #setFilter(execute := #filterExec,
+	               proxyIndex := #rxProxyIndex,
+	               hwIoOfTransparentModul := #hwIdCmCan,
+	               cntOfFilter := 5,
+	               filterData := #filters);
+
+	    IF #st = 2 THEN
+	        IF #setFilter.done THEN
+	            #filterExec := FALSE;
+	            #st := 10;
+	        ELSIF #setFilter.error OR "VT_Elapsed"(since := #tState, now := #now) > T#5S THEN
+	            #diag.filterStatus := #setFilter.status;
+	            #filterExec := FALSE;
+	            #st := 900;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Ontvangen en verwerken
+	    #rcv(enable := #st >= 10,
+	         canModulStatusByte := #canStatus,
+	         deviceType := FALSE,
+	         ignoreRcvFilterSetting := FALSE,
+	         resetRcvMsgBuffer := FALSE,
+	         ackMessage := #rxAck,
+	         inputArea := #rxProxyIn,
+	         outputArea := #rxProxyOut,
+	         messageData := #rxData);
+	    #diag.rcvStatus := #rcv.status;
+
+	    #rxAck := #rcv.valid AND NOT #rxAck;
+
+	    IF #rxAck THEN
+	        #diag.rxFrames := #diag.rxFrames + 1;
+	        #pf := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 16));
+	        #ps := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 8));
+	        #sa := DWORD_TO_BYTE(#rcv.messageId);
+
+	        // ---- VT → ECU (PGN 0xE600)
+	        IF #pf = 16#E6 AND #sa = #vtAddress THEN
+	            IF #rxData[0] = 16#FE THEN   // VT Status (elke seconde)
+	                #diag.vtSeen := TRUE;
+	                #diag.vtAddress := #sa;
+	                #diag.onScreen := #rxData[1] = #myAddress;
+	                #diag.vtActiveMask := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#rxData[3]), N := 8) OR BYTE_TO_WORD(#rxData[2]));
+	                #tVtStatus := #now;
+	            ELSIF #ps = #myAddress THEN
+	                CASE BYTE_TO_INT(#rxData[0]) OF
+	                    192:  // 0xC0 Get Memory-antwoord
+	                        #diag.vtVersion := BYTE_TO_USINT(#rxData[1]);
+	                        #diag.memoryOk := #rxData[2] = 16#00;
+	                        #memResp := TRUE;
+	                    199:  // 0xC7 Get Hardware-antwoord
+	                        #diag.dataMaskWidth := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#rxData[5]), N := 8) OR BYTE_TO_WORD(#rxData[4]));
+	                        #diag.dataMaskHeight := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#rxData[7]), N := 8) OR BYTE_TO_WORD(#rxData[6]));
+	                        #hwResp := TRUE;
+	                    18:  // 0x12 End of Object Pool-antwoord
+	                        #diag.eopErrorCodes := #rxData[1];
+	                        #diag.eopFaultyParent := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#rxData[3]), N := 8) OR BYTE_TO_WORD(#rxData[2]));
+	                        #diag.eopFaultyObject := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#rxData[5]), N := 8) OR BYTE_TO_WORD(#rxData[4]));
+	                        #diag.eopPoolErrors := #rxData[6];
+	                        #eopResp := TRUE;
+	                    179:  // 0xB3 Change String Value-antwoord
+	                        #diag.stringError := #rxData[5];
+	                        #strResp := TRUE;
+	                END_CASE;
+	            END_IF;
+
+	        // ---- TP.CM van de VT naar ons
+	        ELSIF #pf = 16#EC AND #ps = #myAddress AND #sa = #vtAddress
+	            AND #rxData[5] = 16#00 AND #rxData[6] = 16#E7 AND #rxData[7] = 16#00 THEN
+	            IF #rxData[0] = 16#11 AND (#tpState = 2 OR #tpState = 3) THEN   // CTS
+	                #n := BYTE_TO_INT(#rxData[1]);
+	                IF #n > 0 THEN
+	                    #tpNext := BYTE_TO_INT(#rxData[2]);
+	                    #tpEnd := #tpNext + #n - 1;
+	                    IF #tpEnd > #tpPackets THEN
+	                        #tpEnd := #tpPackets;
+	                    END_IF;
+	                    #tpState := 3;
+	                END_IF;
+	                #tTp := #now;   // ook bij CTS met 0 pakketten (VT vraagt wachten)
+	            ELSIF #rxData[0] = 16#13 AND #tpState >= 2 AND #tpState <= 3 THEN   // End of Message Ack
+	                #tpState := 5;
+	            ELSIF #rxData[0] = 16#FF AND #tpState >= 1 AND #tpState <= 3 THEN   // Abort
+	                #diag.tpAbortReason := #rxData[1];
+	                #tpState := 9;
+	            END_IF;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Toestandsmachine
+	    CASE #st OF
+	        10:  // Address Claim: onze NAME op PGN 0xEE00 aan iedereen
+	            #ok := "VT_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q);
+	            #tState := #now;
+	            #st := 11;
+
+	        11:  // 250 ms wachten op eventuele conflicten
+	            IF "VT_Elapsed"(since := #tState, now := #now) >= T#300MS THEN
+	                #st := 20;
+	            END_IF;
+
+	        20:  // wachten op VT Status van de terminal
+	            IF #diag.vtSeen THEN
+	                #st := 30;
+	            END_IF;
+
+	        30:  // Working Set Master + eerste Maintenance + Get Memory
+	            #d := #ff8;
+	            #d[0] := 16#01;   // 1 lid in de werkset
+	            #ok := "VT_Push"(id := 16#1CFE0D00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q);
+
+	            #d := #ff8;
+	            #d[0] := 16#FF;   // Working Set Maintenance
+	            #d[1] := 16#01;   // initiating bit
+	            #d[2] := #vtVersionForPool;
+	            #ok := "VT_Push"(id := #idVtCmd, data := #d, q := #q);
+	            #tMaint := #now;
+
+	            #d := #ff8;
+	            #d[0] := 16#C0;   // Get Memory: benodigde bytes als 32-bit getal
+	            #d[2] := DWORD_TO_BYTE(UDINT_TO_DWORD(#poolSize));
+	            #d[3] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#poolSize), N := 8));
+	            #d[4] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#poolSize), N := 16));
+	            #d[5] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#poolSize), N := 24));
+	            #memResp := FALSE;
+	            #ok := "VT_Push"(id := #idVtCmd, data := #d, q := #q);
+	            #tState := #now;
+	            #st := 40;
+
+	        40:  // wachten op Get Memory-antwoord
+	            IF #memResp THEN
+	                IF #diag.memoryOk THEN
+	                    #d := #ff8;
+	                    #d[0] := 16#C7;   // Get Hardware (alleen voor diagnose)
+	                    #hwResp := FALSE;
+	                    #ok := "VT_Push"(id := #idVtCmd, data := #d, q := #q);
+	                    #tState := #now;
+	                    #st := 45;
+	                ELSE
+	                    #st := 901;   // te weinig geheugen in de VT
+	                END_IF;
+	            ELSIF "VT_Elapsed"(since := #tState, now := #now) > T#3S THEN
+	                #st := 902;
+	            END_IF;
+
+	        45:  // Get Hardware-antwoord afwachten (max. 1 s), dan de delen van de pool controleren
+	            IF #hwResp OR "VT_Elapsed"(since := #tState, now := #now) > T#1S THEN
+	                // elk deel 1..1784 bytes (één TP-overdracht), binnen 'pool', samen precies poolSize
+	                #ok := #poolSize > 0 AND #chunkCount > 0
+	                    AND UINT_TO_DINT(#chunkCount) <= UPPER_BOUND(ARR := #chunkStart, DIM := 1) - LOWER_BOUND(ARR := #chunkStart, DIM := 1) + 1
+	                    AND UINT_TO_DINT(#chunkCount) <= UPPER_BOUND(ARR := #chunkLength, DIM := 1) - LOWER_BOUND(ARR := #chunkLength, DIM := 1) + 1
+	                    AND UDINT_TO_DINT(#poolSize) <= UPPER_BOUND(ARR := #pool, DIM := 1) - LOWER_BOUND(ARR := #pool, DIM := 1) + 1;
+	                #total := 0;
+	                IF #ok THEN
+	                    FOR #j := 0 TO UINT_TO_DINT(#chunkCount) - 1 DO
+	                        #chStart := #chunkStart[LOWER_BOUND(ARR := #chunkStart, DIM := 1) + #j];
+	                        #chLen := #chunkLength[LOWER_BOUND(ARR := #chunkLength, DIM := 1) + #j];
+	                        IF #chLen = 0 OR #chLen > 1784 OR #chStart + UINT_TO_UDINT(#chLen) > #poolSize THEN
+	                            #ok := FALSE;
+	                        END_IF;
+	                        #total := #total + UINT_TO_UDINT(#chLen);
+	                    END_FOR;
+	                END_IF;
+	                IF #ok AND #total = #poolSize THEN
+	                    #chunkIdx := 0;
+	                    #diag.poolChunks := #chunkCount;
+	                    #st := 47;
+	                ELSE
+	                    #st := 903;   // pool leeg of delen ongeldig
+	                END_IF;
+	            END_IF;
+
+	        47:  // volgend deel klaarzetten: Object Pool Transfer (16#11) met hele objecten
+	            #chStart := #chunkStart[LOWER_BOUND(ARR := #chunkStart, DIM := 1) + UINT_TO_DINT(#chunkIdx)];
+	            #chLen := #chunkLength[LOWER_BOUND(ARR := #chunkLength, DIM := 1) + UINT_TO_DINT(#chunkIdx)];
+	            #lb := LOWER_BOUND(ARR := #pool, DIM := 1) + UDINT_TO_DINT(#chStart);
+	            #tpBuf[0] := 16#11;
+	            FOR #i := 0 TO UINT_TO_INT(#chLen) - 1 DO
+	                #tpBuf[#i + 1] := #pool[#lb + #i];
+	            END_FOR;
+	            #tpLen := #chLen + 1;
+	            #tpState := 1;
+	            #diag.poolChunk := #chunkIdx + 1;
+	            #st := 50;
+
+	        50:  // pool-overdracht loopt (TP), deel per deel
+	            IF #tpState = 5 THEN
+	                #tpState := 0;
+	                #chunkIdx := #chunkIdx + 1;
+	                IF #chunkIdx < #chunkCount THEN
+	                    #st := 47;   // volgend deel
+	                ELSE
+	                    #d := #ff8;
+	                    #d[0] := 16#12;   // End of Object Pool
+	                    #eopResp := FALSE;
+	                    #ok := "VT_Push"(id := #idVtCmd, data := #d, q := #q);
+	                    #tState := #now;
+	                    #st := 60;
+	                END_IF;
+	            ELSIF #tpState = 9 THEN
+	                #tpState := 0;
+	                #st := 904;
+	            END_IF;
+
+	        60:  // VT controleert de pool
+	            IF #eopResp THEN
+	                IF #diag.eopErrorCodes = 16#00 THEN
+	                    #st := 70;
+	                ELSE
+	                    #st := 905;
+	                END_IF;
+	            ELSIF "VT_Elapsed"(since := #tState, now := #now) > T#10S THEN
+	                #st := 906;
+	            END_IF;
+
+	        70:  // actief: tekst wijzigen op aanvraag
+	            IF #pendingText AND #tpState = 0 THEN
+	                #pendingText := FALSE;
+	                #textLen := LEN(#text);
+	                IF #textLen > UINT_TO_INT(#textMaxLength) THEN
+	                    #textLen := UINT_TO_INT(#textMaxLength);
+	                END_IF;
+	                #tpBuf[0] := 16#B3;   // Change String Value
+	                #tpBuf[1] := WORD_TO_BYTE(UINT_TO_WORD(#textObjectId));
+	                #tpBuf[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#textObjectId), N := 8));
+	                #tpBuf[3] := INT_TO_BYTE(#textLen);
+	                #tpBuf[4] := 16#00;
+	                FOR #i := 1 TO #textLen DO
+	                    #tpBuf[4 + #i] := CHAR_TO_BYTE(#text[#i]);
+	                END_FOR;
+	                #tpLen := INT_TO_UINT(5 + #textLen);
+	                #strResp := FALSE;
+	                IF #tpLen <= 8 THEN   // past in één frame
+	                    #d := #ff8;
+	                    FOR #i := 0 TO UINT_TO_INT(#tpLen) - 1 DO
+	                        #d[#i] := #tpBuf[#i];
+	                    END_FOR;
+	                    #ok := "VT_Push"(id := #idVtCmd, data := #d, q := #q);
+	                ELSE
+	                    #tpState := 1;
+	                END_IF;
+	            END_IF;
+	            IF #tpState = 5 OR #tpState = 9 THEN   // tekst-TP afgerond of afgebroken
+	                #tpState := 0;
+	            END_IF;
+	    END_CASE;
+
+	    // VT verdwenen? (geen VT Status gedurende 3 s) → opnieuw aanmelden
+	    IF #st >= 30 AND #st < 900 AND "VT_Elapsed"(since := #tVtStatus, now := #now) > T#3S THEN
+	        #diag.vtSeen := FALSE;
+	        #diag.onScreen := FALSE;
+	        #tpState := 0;
+	        #st := 20;
+	    END_IF;
+	END_REGION
+
+	REGION Transport protocol – zender (RTS/CTS)
+	    CASE #tpState OF
+	        1:  // Request To Send
+	            #tpPackets := (UINT_TO_INT(#tpLen) + 6) / 7;
+	            #d[0] := 16#10;
+	            #d[1] := WORD_TO_BYTE(UINT_TO_WORD(#tpLen));
+	            #d[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#tpLen), N := 8));
+	            #d[3] := INT_TO_BYTE(#tpPackets);
+	            #d[4] := 16#FF;   // geen maximum per CTS
+	            #d[5] := 16#00;   // PGN 0x00E700 (ECU → VT)
+	            #d[6] := 16#E7;
+	            #d[7] := 16#00;
+	            IF "VT_Push"(id := #idTpCm, data := #d, q := #q) THEN
+	                #tTp := #now;
+	                #tpState := 2;
+	            END_IF;
+
+	        2:  // wachten op CTS of EoMA
+	            IF "VT_Elapsed"(since := #tTp, now := #now) > T#3S THEN
+	                #d := #ff8;
+	                #d[0] := 16#FF;   // Abort, reden 3 = timeout
+	                #d[1] := 16#03;
+	                #d[5] := 16#00;
+	                #d[6] := 16#E7;
+	                #d[7] := 16#00;
+	                #ok := "VT_Push"(id := #idTpCm, data := #d, q := #q);
+	                #diag.tpAbortReason := 16#03;
+	                #tpState := 9;
+	            END_IF;
+
+	        3:  // gevraagde DT-pakketten in de wachtrij zetten zolang er plaats is
+	            WHILE #tpNext <= #tpEnd AND #q.count < 32 DO
+	                #d[0] := INT_TO_BYTE(#tpNext);
+	                FOR #k := 0 TO 6 DO
+	                    #idx := (#tpNext - 1) * 7 + #k;
+	                    IF #idx < UINT_TO_INT(#tpLen) THEN
+	                        #d[#k + 1] := #tpBuf[#idx];
+	                    ELSE
+	                        #d[#k + 1] := 16#FF;
+	                    END_IF;
+	                END_FOR;
+	                #ok := "VT_Push"(id := #idTpDt, data := #d, q := #q);
+	                #tpNext := #tpNext + 1;
+	            END_WHILE;
+	            IF #tpNext > #tpEnd THEN
+	                #tTp := #now;
+	                #tpState := 2;
+	            END_IF;
+	    END_CASE;
+	END_REGION
+
+	REGION Working Set Maintenance (elke seconde)
+	    IF #st >= 40 AND #st < 900 AND "VT_Elapsed"(since := #tMaint, now := #now) >= T#1S THEN
+	        #d := #ff8;
+	        #d[0] := 16#FF;
+	        #d[1] := 16#00;
+	        #d[2] := #vtVersionForPool;
+	        IF "VT_Push"(id := #idVtCmd, data := #d, q := #q) THEN
+	            #tMaint := #now;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Zenden (één frame per handshake van de transmit proxy)
+	    CASE #txState OF
+	        0:
+	            IF #q.count > 0 THEN
+	                #txId := #q.frame[#q.head].id;
+	                #txData := #q.frame[#q.head].data;
+	                #txExec := TRUE;
+	                #txState := 1;
+	            END_IF;
+	        1:
+	            IF #snd.done OR #snd.error THEN
+	                IF #snd.error THEN
+	                    #diag.sendStatus := #snd.status;
+	                ELSE
+	                    #diag.txFrames := #diag.txFrames + 1;
+	                END_IF;
+	                #q.head := (#q.head + 1) MOD 32;
+	                #q.count := #q.count - 1;
+	                #txExec := FALSE;
+	                #txState := 2;
+	            END_IF;
+	        2:  // één aanroep met execute = FALSE voor de volgende flank
+	            #txState := 0;
+	    END_CASE;
+
+	    #snd(execute := #txExec,
+	         messageIdFormat := TRUE,
+	         messageId := #txId,
+	         rtrFrame := FALSE,
+	         canModulStatusByte := #canStatus,
+	         deviceType := FALSE,
+	         inputArea := #txProxyIn,
+	         outputArea := #txProxyOut,
+	         messageData := #txData);
+
+	    IF #st = 0 THEN
+	        #txExec := FALSE;
+	        #txState := 0;
+	    END_IF;
+	END_REGION
+
+	REGION Uitgangen
+	    #state := #st;
+	    #running := #st = 70;
+	    #error := #st >= 900;
+	    CASE #st OF
+	        0: #diag.stateText := 'uit';
+	        1, 2: #diag.stateText := 'filter instellen';
+	        10, 11: #diag.stateText := 'address claim';
+	        20: #diag.stateText := 'wacht op VT Status';
+	        30, 40: #diag.stateText := 'Get Memory';
+	        45: #diag.stateText := 'Get Hardware';
+	        47, 50: #diag.stateText := 'pool uploaden';
+	        60: #diag.stateText := 'VT controleert pool';
+	        70: #diag.stateText := 'actief';
+	        900: #diag.stateText := 'fout: filter (zie filterStatus)';
+	        901: #diag.stateText := 'fout: te weinig VT-geheugen';
+	        902: #diag.stateText := 'fout: geen antwoord Get Memory';
+	        903: #diag.stateText := 'fout: pool of delen ongeldig';
+	        904: #diag.stateText := 'fout: TP afgebroken (tpAbortReason)';
+	        905: #diag.stateText := 'fout: pool geweigerd (eop...)';
+	        906: #diag.stateText := 'fout: geen antwoord End of Pool';
+	    END_CASE;
+	END_REGION
+END_FUNCTION_BLOCK
