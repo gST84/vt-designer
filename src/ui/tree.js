@@ -1,7 +1,10 @@
 // Left panel: pages (masks, keys, containers …) with the layers of the open page, and a list of all objects.
 import { h } from '../util.js';
-import { TYPES, ROOT_TYPES } from '../iso/schema.js';
+import { TYPES, ROOT_TYPES, TYPE_INFO } from '../iso/schema.js';
 import { addObject, objectsOfType } from '../model.js';
+import { infoMark } from './dialogs.js';
+
+const LAYERS_INFO = 'De objecten op het geopende scherm, met wat erin zit. Wat lager in de lijst staat, wordt later getekend en ligt dus bovenop. Klik om te selecteren.';
 
 const PAGE_GROUPS = [
   [0, 'Werkset'], [1, 'Datamaskers'], [2, 'Alarmmaskers'], [4, 'Softkeymaskers'], [5, 'Softkeys'], [3, 'Containers'], [6, 'Knoppen'],
@@ -50,7 +53,7 @@ export class Tree {
     const ws = Object.values(s.O).find((o) => o.type === 0);
     for (const [type, title] of PAGE_GROUPS) {
       const list = objectsOfType(s.project, [type]);
-      const head = h('div', { class: 'grouphead' }, h('span', null, title),
+      const head = h('div', { class: 'grouphead' }, h('span', { class: 'ghl' }, title, infoMark(`${TYPES[type].name}: ${TYPE_INFO[type]}`)),
         type === 0 && list.length ? null : h('button', { class: 'icon', title: `${TYPES[type].name} toevoegen`, onclick: () => this.add(type) }, '+'));
       if (!list.length && (type === 3 || type === 6 || type === 2)) {
         this.host.append(head);
@@ -67,7 +70,7 @@ export class Tree {
     }
     const root = s.O[s.root];
     if (root) {
-      this.host.append(h('div', { class: 'grouphead layers' }, h('span', null, `Lagen van ${root.name}`)));
+      this.host.append(h('div', { class: 'grouphead layers' }, h('span', { class: 'ghl' }, `Lagen van ${root.name}`, infoMark(LAYERS_INFO))));
       const ul = h('ul', { class: 'layers' });
       this.layers(ul, root, [], 0, new Set([root.id]));
       if (!ul.children.length) ul.append(h('li', { class: 'hint' }, 'Nog leeg: voeg objecten toe met de werkbalk.'));
@@ -110,8 +113,10 @@ export class Tree {
       if (f && !objs.length) continue;
       const open = !this.collapsed.has(t) || f;
       list.append(h('div', { class: 'grouphead' },
-        h('span', { class: 'fold', onclick: () => { this.collapsed.has(t) ? this.collapsed.delete(t) : this.collapsed.add(t); this.renderList(list); } },
-          h('span', { class: 'caret' }, objs.length ? (open ? '▾' : '▸') : ' '), `${TYPES[t].nl} `, h('small', null, objs.length || '')),
+        h('span', { class: 'ghl' },
+          h('span', { class: 'fold', onclick: () => { this.collapsed.has(t) ? this.collapsed.delete(t) : this.collapsed.add(t); this.renderList(list); } },
+            h('span', { class: 'caret' }, objs.length ? (open ? '▾' : '▸') : ' '), `${TYPES[t].nl} `, h('small', null, objs.length || '')),
+          infoMark(`${TYPES[t].name}: ${TYPE_INFO[t]}`)),
         t === 0 && objs.length ? null : h('button', { class: 'icon', title: `${TYPES[t].name} toevoegen`, onclick: () => this.addLoose(t) }, '+')));
       if (!open || !objs.length) continue;
       const ul = h('ul', { class: 'pagelist' });

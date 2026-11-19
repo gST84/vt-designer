@@ -90,16 +90,18 @@ $('#top').append(
   saveEl);
 
 // ---------- toolbar ----------
-const ADD = [[11, 'Tekst'], [12, 'Getal'], [14, 'Rechthoek'], [15, 'Ellips'], [13, 'Lijn'], [16, 'Veelhoek'], [20, 'Afbeelding…'],
-  [17, 'Meter'], [18, 'Staaf'], [19, 'Boog'], [6, 'Knop'], [3, 'Container'], [27, 'Verwijzing']];
-const INPUT = [[7, 'Ja/nee'], [8, 'Tekst'], [9, 'Getal'], [10, 'Lijst']];
+const ADD = [[11, 'Tekst'], [12, 'Getal'], [14, 'Rechthoek'], [15, 'Ellips'], [13, 'Lijn'], [16, 'Veelhoek'], [20, 'Afbeelding (bestand kiezen)'],
+  [17, 'Meter'], [18, 'Staafmeter'], [19, 'Boogmeter'], [6, 'Knop'], [3, 'Container'], [27, 'Verwijzing']];
+const INPUT = [[7, 'Invoer ja/nee'], [8, 'Invoer tekst'], [9, 'Invoer getal'], [10, 'Invoer keuzelijst']];
 const rootLabel = h('span', { class: 'rootname' });
 const addBtns = [];
+/** Icon button per object type; the tooltip says where the object goes, or why it cannot. */
 const mk = ([t, label]) => {
-  const b = btn(label, `${TYPES[t].name} toevoegen`, () => place(t), 'tool');
-  addBtns.push([t, b]);
+  const b = h('button', { class: 'tool iconbtn', 'aria-label': `${label} toevoegen`, onclick: () => (b.classList.contains('off') ? toast(b.dataset.tip) : place(t)) }, icon('t' + t));
+  addBtns.push([t, b, label]);
   return b;
 };
+const group = (list) => list.map(mk);
 const zoomLbl = h('span', { class: 'zoom' });
 const gridChk = h('input', { type: 'checkbox' });
 gridChk.onchange = () => { editor.showGrid = gridChk.checked; editor.drawGrid(); };
@@ -107,26 +109,33 @@ const hidChk = h('input', { type: 'checkbox', checked: true });
 hidChk.onchange = () => { editor.showHidden = hidChk.checked; editor.render(); };
 $('#toolbar').append(
   rootLabel, sep(),
-  h('span', { class: 'tlabel' }, 'Uitvoer'), ...ADD.map(mk), sep(),
-  h('span', { class: 'tlabel' }, 'Invoer'), ...INPUT.map(mk),
-  h('span', { class: 'grow' }),
-  h('label', { class: 'check small', title: 'Raster tonen' }, gridChk, 'raster'),
-  h('label', { class: 'check small', title: 'Verborgen containers tonen' }, hidChk, 'verborgen'),
-  btn('−', 'Uitzoomen', () => editor.setZoom(editor.zoom / 1.25), 'icon'), zoomLbl,
-  btn('+', 'Inzoomen', () => editor.setZoom(editor.zoom * 1.25), 'icon'),
-  btn('Passend', 'Passend in beeld', () => editor.fitView()));
+  ...group(ADD.slice(0, 2)), sep(), ...group(ADD.slice(2, 7)), sep(), ...group(ADD.slice(7, 10)), sep(), ...group(ADD.slice(10)), sep(),
+  ...group(INPUT));
 
 function toolbar() {
   const root = store.O[store.root];
   rootLabel.textContent = root ? `${TYPES[root.type].nl}: ${root.name}` : '';
-  for (const [t, b] of addBtns) b.disabled = !canPlace(t);
+  const where = root ? `een ${TYPES[root.type].nl.toLowerCase()}` : 'dit scherm';
+  for (const [t, b, label] of addBtns) {
+    const tg = target(t);
+    b.classList.toggle('off', !tg);
+    b.setAttribute('aria-disabled', tg ? 'false' : 'true');
+    b.dataset.tip = tg ? `${label} (${TYPES[t].name}) – toevoegen aan ${tg.parent.name}` : `${label} (${TYPES[t].name}) kan niet in ${where}`;
+  }
 }
 
 // ---------- status bar ----------
 const stPool = h('span');
 const stProb = h('button', { class: 'link probs', onclick: () => showProblems() });
 const stPos = h('span');
-$('#status').append(stPool, stProb, h('span', { class: 'grow' }), stPos);
+// view settings sit with the status (the toolbar above is for adding objects)
+$('#status').append(stPool, stProb, h('span', { class: 'grow' }), stPos,
+  h('span', { class: 'view' },
+    h('label', { class: 'check small', title: 'Raster tonen' }, gridChk, 'raster'),
+    h('label', { class: 'check small', title: 'Verborgen containers tonen' }, hidChk, 'verborgen'),
+    btn('−', 'Uitzoomen', () => editor.setZoom(editor.zoom / 1.25), 'icon'), zoomLbl,
+    btn('+', 'Inzoomen', () => editor.setZoom(editor.zoom * 1.25), 'icon'),
+    btn('Passend', 'Passend in beeld', () => editor.fitView())));
 
 function status() {
   try {

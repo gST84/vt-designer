@@ -241,3 +241,36 @@ export const ROOT_TYPES = [0, 1, 2, 4, 5, 3, 6];
 export const hasField = (type, n) => !!TYPES[type]?.fields.some((f) => f.n === n);
 export const typeName = (type) => TYPES[type]?.name ?? `Type ${type}`;
 export const typeNl = (type) => TYPES[type]?.nl ?? `Type ${type}`;
+
+/** Short explanation per type (info markers in the object lists). */
+export const TYPE_INFO = {
+  0: 'Het startobject van de pool (precies één). Bepaalt welk masker eerst getoond wordt (actief masker) en wat er in de werksetlijst van de terminal staat: de designator, zo groot als een softkey.',
+  1: 'Een volledig scherm van je toepassing (vierkant, de grootte van het datamasker van de terminal). De PLC wisselt van scherm met Change Active Mask. Een datamasker kan een softkeymasker meekrijgen.',
+  2: 'Een scherm voor een alarm of melding, met een prioriteit en een geluidssignaal. Bij hoge prioriteit brengt de terminal je toepassing naar voren, ook als een andere werkset actief is. De PLC toont het met Change Active Mask.',
+  3: 'Groepeert objecten zodat je ze samen verplaatst, verbergt of toont (Hide/Show Object). Dezelfde container kan in meerdere maskers staan.',
+  4: 'De rij softkeys naast een data- of alarmmasker. Bevat toetsen (Softkeys) en hoort bij een masker via het attribuut Softkeymasker.',
+  5: 'Eén toets in een softkeymasker, zo groot als een softkey. Indrukken stuurt een Soft Key Activation met de toetscode naar de PLC.',
+  6: 'Een aanraakknop op het scherm. Indrukken stuurt een Button Activation met de toetscode naar de PLC. Kan vergrendelbaar zijn (aan/uit).',
+  7: 'Selectievakje dat de bediener aan- of uitzet. De nieuwe waarde komt als VT Change Numeric Value bij de PLC.',
+  8: 'Tekstinvoerveld. De ingevoerde tekst komt als VT Change String Value bij de PLC.',
+  9: 'Getalinvoer met minimum, maximum, schaal en offset. De ingevoerde waarde komt als VT Change Numeric Value bij de PLC.',
+  10: 'Keuzelijst: de bediener kiest een item, de PLC krijgt de index als VT Change Numeric Value.',
+  11: 'Tekst op het scherm. De PLC wijzigt hem met Change String Value, tot de vaste lengte.',
+  12: 'Getal op het scherm, getoond als (waarde + offset) × schaal. De PLC wijzigt de waarde met Change Numeric Value.',
+  13: 'Rechte lijn binnen een kader van breedte × hoogte, met lijnattributen.',
+  14: 'Rechthoek met lijnattributen en optioneel een vulling.',
+  15: 'Ellips, boog, segment of taartpunt, met lijn- en vulattributen.',
+  16: 'Veelhoek of open lijn door een reeks punten.',
+  17: 'Wijzermeter: een naald tussen minimum en maximum.',
+  18: 'Staafmeter, horizontaal of verticaal, eventueel met een doellijn.',
+  19: 'Boogvormige staafmeter, eventueel met een doellijn.',
+  20: 'Afbeelding in VT-kleuren (2, 16 of 256 kleuren), eventueel RLE-gecomprimeerd.',
+  21: 'Getal zonder weergave. Velden die ernaar verwijzen tonen dezelfde waarde: de PLC wijzigt één variabele en alles volgt.',
+  22: 'Tekst zonder weergave. Tekstvelden die ernaar verwijzen tonen dezelfde tekst.',
+  23: 'Kleur, grootte, tekenset en stijl van tekst; gedeeld door tekst- en getalvelden.',
+  24: 'Kleur, dikte en patroon van lijnen; gedeeld door lijnen en vormen.',
+  25: 'Vulling van vormen: geen, lijnkleur, vulkleur of een patroon (afbeelding).',
+  26: 'Welke tekens toegelaten (of verboden) zijn in een tekstinvoerveld.',
+  27: 'Verwijst naar een ander object. Door de verwijzing te wijzigen (Change Numeric Value) toont de PLC een ander object op dezelfde plaats.',
+  28: 'Reeks VT-opdrachten die de terminal zelf uitvoert bij een gebeurtenis (bv. een toetsdruk), zonder de PLC.',
+};

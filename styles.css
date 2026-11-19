@@ -68,11 +68,16 @@ aside { background: var(--panel); min-height: 0; display: flex; flex-direction: 
 .grow { flex: 1; }
 
 #center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-#toolbar { display: flex; gap: 4px; align-items: center; padding: 5px 8px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-#toolbar .tool { padding: 3px 7px; font-size: 12px; }
-#toolbar .tlabel { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 0 2px 0 4px; }
-#toolbar .rootname { font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#toolbar .zoom { min-width: 44px; text-align: center; font-size: 12px; color: var(--muted); }
+#toolbar { display: flex; gap: 3px; align-items: center; padding: 5px 8px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+#toolbar .tool { padding: 3px 4px; line-height: 0; }
+#toolbar .sep { margin: 0 3px; }
+#toolbar .tool.off { opacity: .35; cursor: not-allowed; }
+#toolbar .tool.off:hover { border-color: var(--line); }
+#toolbar .rootname { font-weight: 600; font-size: 12px; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#status .view { display: inline-flex; align-items: center; gap: 4px; }
+#status .view .check { margin: 0 6px 0 0; }
+#status .view button { padding: 0 7px; font-size: 12px; line-height: 18px; }
+#status .zoom { min-width: 40px; text-align: center; font-size: 12px; color: var(--muted); }
 #canvas { flex: 1; position: relative; overflow: hidden; background: var(--canvas); min-height: 0; min-width: 0; }
 #status { display: flex; gap: 16px; align-items: center; padding: 3px 10px; background: var(--panel); border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
 #status .probs { color: var(--ok); text-decoration: none; font-size: 12px; }
@@ -113,6 +118,11 @@ svg.vt .gridline { stroke: #000; stroke-opacity: .08; vector-effect: non-scaling
 .grouphead:first-child { margin-top: 0; }
 .grouphead button { padding: 0 7px; font-size: 13px; line-height: 20px; }
 .grouphead .fold { cursor: pointer; user-select: none; }
+.grouphead .ghl { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.info { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--muted); color: var(--muted); font: italic 600 10px/1 Georgia, "Times New Roman", serif; text-transform: none; letter-spacing: 0; cursor: help; flex: none; }
+.info:hover, .info:focus { border-color: var(--accent); color: var(--accent); outline: none; }
+.tip { position: fixed; z-index: 2000; max-width: 280px; padding: 7px 10px; border-radius: 6px; background: #222b38; color: #fff; font-size: 12px; line-height: 1.45; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); pointer-events: none; opacity: 0; transition: opacity .12s; }
+.tip.show { opacity: 1; }
 .grouphead small { font-weight: 400; }
 .grouphead.layers { margin-top: 16px; }
 .caret { display: inline-block; width: 12px; }

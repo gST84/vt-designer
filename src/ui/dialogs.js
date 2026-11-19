@@ -103,3 +103,31 @@ export function colourButton(value, onPick, max = 256) {
   b.onclick = () => palettePopup(b, value, onPick, max);
   return b;
 }
+
+// ---------- info markers ----------
+let tipEl = null;
+
+/** Small "i" that explains something on hover (or keyboard focus / tap). */
+export function infoMark(text) {
+  return h('span', { class: 'info', tabindex: 0, role: 'note', 'aria-label': text, 'data-tip': text }, 'i');
+}
+
+function showTip(el) {
+  if (!tipEl) document.body.append((tipEl = h('div', { class: 'tip', role: 'tooltip' })));
+  tipEl.textContent = el.dataset.tip;
+  tipEl.classList.add('show');
+  const r = el.getBoundingClientRect();
+  const t = tipEl.getBoundingClientRect();
+  const left = Math.max(6, Math.min(window.innerWidth - t.width - 6, r.left - 8));
+  const top = r.bottom + 6 + t.height > window.innerHeight ? r.top - t.height - 6 : r.bottom + 6;
+  tipEl.style.left = left + 'px';
+  tipEl.style.top = Math.max(6, top) + 'px';
+}
+
+const hideTip = () => tipEl?.classList.remove('show');
+// One listener for the whole page: lists are redrawn often, so markers come and go.
+document.addEventListener('mouseover', (e) => { const t = e.target.closest?.('[data-tip]'); if (t) showTip(t); else hideTip(); });
+document.addEventListener('focusin', (e) => { const t = e.target.closest?.('[data-tip]'); if (t) showTip(t); else hideTip(); });
+document.addEventListener('focusout', hideTip);
+document.addEventListener('scroll', hideTip, true);
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest?.('.info')) hideTip(); });
