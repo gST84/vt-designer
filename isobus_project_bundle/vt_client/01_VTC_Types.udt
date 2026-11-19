@@ -1,0 +1,134 @@
+// =====================================================================
+//  VT_Client – PLC-datatypes. Eerst importeren.
+//  Eigen namen (typeVtc…), zodat dit naast vt_test_project in hetzelfde project kan staan.
+//  Versie 0.1 – 2026-11-19
+// =====================================================================
+
+TYPE "typeVtcTxFrame"
+VERSION : 0.1
+   STRUCT
+      id : DWord;   // 29-bit CAN-identifier
+      data : Array[0..7] of Byte;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtcTxQueue"
+VERSION : 0.1
+   STRUCT
+      frame : Array[0..31] of "typeVtcTxFrame";
+      head : Int;   // index van het volgende te verzenden frame
+      count : Int;   // aantal frames in de wachtrij
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtKey"
+VERSION : 0.1
+   STRUCT
+      pressed : Bool;   // toets wordt ingedrukt gehouden
+      onPress : Bool;   // één cyclus TRUE bij indrukken
+      onRelease : Bool;   // één cyclus TRUE bij loslaten
+      count : UInt;   // aantal keer ingedrukt (loopt rond)
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtcKey"
+VERSION : 0.1
+   STRUCT
+      id : UInt;   // Key of Button (16#FFFF = ongebruikt)
+      pressed : Bool;
+      onPress : Bool;
+      onRelease : Bool;
+      count : UInt;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtcNum"
+VERSION : 0.1
+   STRUCT
+      id : UInt;   // object (16#FFFF = ongebruikt)
+      varId : UInt;   // Number Variable waar het object naar verwijst (16#FFFF = geen)
+      value : UDInt;   // ruwe waarde
+      dirty : Bool;   // nog naar de VT sturen
+      fromVt : Bool;   // de VT meldde een nieuwe waarde (bediener)
+      t : Time;   // laatst verstuurd (TIME_TCK)
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtcStr"
+VERSION : 0.1
+   STRUCT
+      id : UInt;   // object (16#FFFF = ongebruikt)
+      varId : UInt;   // String Variable waar het object naar verwijst (16#FFFF = geen)
+      maxLen : UInt;   // vaste lengte in de pool
+      text : String;
+      dirty : Bool;
+      fromVt : Bool;
+      t : Time;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtcFlag"
+VERSION : 0.1
+   STRUCT
+      id : UInt;   // object (16#FFFF = ongebruikt)
+      cmd : Byte;   // 16#A0 = Hide/Show Object, 16#A1 = Enable/Disable Object
+      on : Bool;   // TRUE = tonen / inschakelen
+      dirty : Bool;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtcCtrl"
+VERSION : 0.1
+   STRUCT
+      wsId : UInt;   // Working Set
+      mask : UInt;   // gewenst actief masker
+      maskDirty : Bool;   // Change Active Mask nog sturen
+      ready : Bool;   // pool geladen, werkset actief
+      onScreen : Bool;   // onze werkset staat op de voorgrond
+      shownMask : UInt;   // masker dat de VT toont (VT Status)
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeVtcDiag"
+VERSION : 0.1
+   STRUCT
+      stateText : String[40];   // leesbare toestand
+      vtSeen : Bool;   // VT Status ontvangen
+      vtVersion : USInt;   // VT-versie uit Get Memory-antwoord
+      onScreen : Bool;   // terminal toont onze werkset
+      vtActiveMask : UInt;   // actief masker volgens VT Status
+      memoryOk : Bool;
+      poolChunk : UInt;   // deel van de pool dat verstuurd wordt (1 = eerste)
+      poolChunks : UInt;
+      dataMaskWidth : UInt;   // uit Get Hardware (0 = geen antwoord)
+      dataMaskHeight : UInt;
+      eopErrorCodes : Byte;   // End of Object Pool: byte 2 (0 = OK)
+      eopFaultyParent : UInt;
+      eopFaultyObject : UInt;
+      eopPoolErrors : Byte;
+      tpAbortReason : Byte;   // reden van laatste TP-abort (zenden)
+      events : UDInt;   // meldingen van de VT verwerkt (toetsen, invoer)
+      unknownEvents : UDInt;   // meldingen voor objecten die niet in VT_Io staan
+      lastUnknownId : UInt;
+      commands : UDInt;   // opdrachten naar de VT gestuurd
+      cmdErrors : UDInt;   // antwoorden met een foutcode
+      lastCmdFunction : Byte;   // functiecode van de laatste fout (bv. 16#A9)
+      lastCmdObject : UInt;
+      lastCmdError : Byte;
+      rxTpAborts : UDInt;   // ontvangst via TP afgebroken
+      filterStatus : Word;
+      rcvStatus : Word;
+      sendStatus : Word;
+      rxFrames : UDInt;
+      txFrames : UDInt;
+   END_STRUCT;
+
+END_TYPE

@@ -1,0 +1,971 @@
+// =====================================================================
+//  VT_Client: S7-1500 + ET 200SP CM CAN als ISOBUS-werkset, met PLC-interface.
+//  Laadt de object pool (in delen) en houdt daarna de tabellen van de door de
+//  VT Designer gegenereerde DB "VT_Io" gelijk met het scherm:
+//    - PLC → scherm: Change Numeric Value, Change String Value, Hide/Show,
+//      Enable/Disable en Change Active Mask, enkel voor wat veranderd is;
+//    - scherm → PLC: Soft Key / Button Activation, VT Change Numeric Value,
+//      VT Change String Value (ook via TP).
+//  Na elke (her)start van de pool stuurt hij alle waarden opnieuw.
+//
+//  Vereist: Siemens-bibliotheek LCan en 01_VTC_Types.udt.
+//  Staat los van vt_test_project (eigen namen VTC_…/typeVtc…).
+//  Versie 0.1 – 2026-11-19 – niet gecompileerd bij het schrijven.
+// =====================================================================
+
+FUNCTION "VTC_Elapsed" : Time
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      since : Time;
+      now : Time;
+   END_VAR
+   VAR_TEMP
+      t : Time;
+   END_VAR
+
+BEGIN
+	#t := #now - #since;
+	IF #t < T#0MS THEN   // TIME_TCK is teruggesprongen naar 0
+	    #t := #t + T#24D_20H_31M_23S_647MS;
+	END_IF;
+	#VTC_Elapsed := #t;
+END_FUNCTION
+
+FUNCTION "VTC_Push" : Bool
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol)'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      id : DWord;
+      data : Array[0..7] of Byte;
+   END_VAR
+   VAR_IN_OUT
+      q : "typeVtcTxQueue";
+   END_VAR
+   VAR_TEMP
+      idx : Int;
+   END_VAR
+
+BEGIN
+	IF #q.count >= 32 THEN
+	    #VTC_Push := FALSE;
+	ELSE
+	    #idx := (#q.head + #q.count) MOD 32;
+	    #q.frame[#idx].id := #id;
+	    #q.frame[#idx].data := #data;
+	    #q.count := #q.count + 1;
+	    #VTC_Push := TRUE;
+	END_IF;
+END_FUNCTION
+
+FUNCTION_BLOCK "VT_Client"
+TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io)'
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Claude'
+FAMILY : ISOBUS
+VERSION : 0.1
+//Elke cyclus aanroepen, gevolgd door "VT_IoMap"(). enable = TRUE start: filter zetten,
+//address claim, wachten op de VT, pool uploaden. Daarna running = TRUE en volgt het scherm "VT_Io".
+   VAR_INPUT
+      enable : Bool;   // TRUE = werkset actief, positieve flank = (her)start
+      myAddress : Byte := 16#90;   // ons bronadres (moet vrij zijn op de bus)
+      vtAddress : Byte := 16#80;   // adres van de terminal
+      canStatus : Byte;   // statusbyte van de CM CAN
+      hwIdCmCan : HW_IO;   // hardware-ID van de CM CAN (systeemconstante)
+      rxProxyIndex : Byte := 2;   // nummer van de receive proxy voor VT-verkeer
+      poolSize : UDInt;   // pool-DB .size
+      chunkCount : UInt;   // pool-DB .chunkCount
+      minInterval : Time := T#100MS;   // minimum tijd tussen twee opdrachten voor hetzelfde getal of dezelfde tekst
+      maxPerCycle : Int := 4;   // maximum aantal opdrachten per cyclus
+      echoResponses : Bool := TRUE;   // Soft Key/Button Activation en VT Change Numeric Value beantwoorden met hetzelfde bericht
+   END_VAR
+
+   VAR_OUTPUT
+      running : Bool;   // pool geladen, werkset actief
+      error : Bool;   // gestopt met fout: zie diag
+      state : Int;
+      diag : "typeVtcDiag";
+   END_VAR
+
+   VAR_IN_OUT
+      pool : Array[*] of Byte;   // pool-DB .data
+      chunkStart : Array[*] of UDInt;   // pool-DB .chunkStart
+      chunkLength : Array[*] of UInt;   // pool-DB .chunkLength
+      num : Array[*] of "typeVtcNum";   // "VT_Io".sys.num
+      str : Array[*] of "typeVtcStr";   // "VT_Io".sys.str
+      flag : Array[*] of "typeVtcFlag";   // "VT_Io".sys.flag
+      key : Array[*] of "typeVtcKey";   // "VT_Io".sys.key
+      ctrl : "typeVtcCtrl";   // "VT_Io".sys.ctrl
+      rxProxyIn : "LCan_typeRcvInTransparentMessage";
+      rxProxyOut : "LCan_typeRcvOutTransparentMessage";
+      txProxyIn : "LCan_typeSendInTransparentMessage";
+      txProxyOut : "LCan_typeSendOutTransparentMessage";
+   END_VAR
+
+   VAR
+      setFilter : "LCan_SetTransparentFilter";
+      rcv : "LCan_RcvTransparentMessage";
+      snd : "LCan_SendTransparentMessage";
+      filters : Array[0..15] of "LCan_typeTransparentFilter";
+      filterExec : Bool;
+      rxData : Array[0..7] of Byte;
+      rxAck : Bool;
+      txData : Array[0..7] of Byte;
+      txId : DWord;
+      txExec : Bool;
+      txState : Int;
+      q : "typeVtcTxQueue";
+      ff8 : Array[0..7] of Byte := [8(16#FF)];
+      isoName : Array[0..7] of Byte := [16#39, 16#30, 16#00, 16#00, 16#00, 16#81, 16#00, 16#20];   // 64-bit ISO NAME: identiteit 12345, fabrikant 0, functie 129, industriegroep 2
+      vtVersionForPool : Byte := 16#03;   // VT-versie waarvoor de pool gemaakt is
+      st : Int;
+      tState : Time;
+      tMaint : Time;
+      tVtStatus : Time;
+      tTp : Time;
+      edgeEnable : Bool;
+      memResp : Bool;
+      hwResp : Bool;
+      eopResp : Bool;
+      resync : Bool;   // alle waarden opnieuw naar de VT sturen
+      // transport protocol, zenden (pool, lange teksten)
+      tpBuf : Array[0..1784] of Byte;
+      tpLen : UInt;
+      tpPackets : Int;
+      tpNext : Int;
+      tpEnd : Int;
+      tpState : Int;   // 0 vrij, 1 start, 2 wacht CTS, 3 DT zenden, 5 klaar, 9 fout
+      chunkIdx : UInt;
+      // transport protocol, ontvangen (VT Change String Value > 4 tekens)
+      rxTpState : Int;   // 0 vrij, 1 bezig
+      rxTpLen : Int;
+      rxTpPackets : Int;
+      rxTpMax : Int;   // maximum pakketten per CTS volgens de VT
+      rxTpNext : Int;   // volgend verwacht pakket
+      rxTpWinEnd : Int;   // laatste pakket van de huidige CTS
+      rxTpCts : Bool;   // CTS nog sturen
+      tRxTp : Time;
+      rxTpBuf : Array[0..299] of Byte;
+      // laatste bericht van de VT (enkel frame of via TP)
+      msg : Array[0..299] of Byte;
+      msgLen : Int;
+      // ronde per tabel, zodat elk object aan de beurt komt
+      iNum : DInt;
+      iStr : DInt;
+      iFlag : DInt;
+   END_VAR
+
+   VAR_TEMP
+      now : Time;
+      d : Array[0..7] of Byte;
+      i : Int;
+      k : Int;
+      idx : Int;
+      n : Int;
+      sLen : Int;
+      sent : Int;
+      lb : DInt;
+      ub : DInt;
+      j : DInt;
+      m : DInt;
+      chStart : UDInt;
+      chLen : UInt;
+      total : UDInt;
+      oid : UInt;
+      tid : UInt;
+      v : UDInt;
+      pf : Byte;
+      ps : Byte;
+      sa : Byte;
+      idVtCmd : DWord;   // ECU → VT (PGN 0xE700), prioriteit 7
+      idTpCm : DWord;   // TP.CM naar de VT
+      idTpDt : DWord;   // TP.DT naar de VT
+      ok : Bool;
+      found : Bool;
+      haveMsg : Bool;
+      chars : Array[0..253] of Char;
+   END_VAR
+
+
+BEGIN
+	REGION Voorbereiding
+	    #now := TIME_TCK();
+	    #idVtCmd := 16#1CE70000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idTpCm := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idTpDt := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #haveMsg := FALSE;
+
+	    IF #enable AND NOT #edgeEnable THEN   // (her)start
+	        #st := 1;
+	        #q.head := 0;
+	        #q.count := 0;
+	        #tpState := 0;
+	        #rxTpState := 0;
+	        #txState := 0;
+	        #txExec := FALSE;
+	        #diag.vtSeen := FALSE;
+	        #diag.onScreen := FALSE;
+	    ELSIF NOT #enable THEN
+	        #st := 0;
+	        #q.count := 0;
+	        #tpState := 0;
+	        #rxTpState := 0;
+	    END_IF;
+	    #edgeEnable := #enable;
+	END_REGION
+
+	REGION Ontvangstfilter (receive proxy voor VT-verkeer)
+	    IF #st = 1 THEN
+	        FOR #i := 0 TO 15 DO
+	            #filters[#i].ignoreFilter := TRUE;
+	            #filters[#i].messageFilter := 1;   // alleen dataframes
+	            #filters[#i].messageIdFormat := 2;   // alleen 29-bit
+	            #filters[#i].messageId := 16#0;
+	        END_FOR;
+	        // VT Status van de terminal aan iedereen
+	        #filters[0].messageId := 16#1CE6FF00 OR BYTE_TO_DWORD(#vtAddress);
+	        // VT → ons (prioriteit 7 en 6)
+	        #filters[1].messageId := 16#1CE60000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[2].messageId := 16#18E60000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        // TP.CM van de VT naar ons (CTS, EoMA, abort, RTS)
+	        #filters[3].messageId := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[4].messageId := 16#18EC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        // TP.DT van de VT naar ons (lange VT Change String Value)
+	        #filters[5].messageId := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[6].messageId := 16#18EB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        FOR #i := 0 TO 6 DO
+	            #filters[#i].ignoreFilter := FALSE;
+	        END_FOR;
+	        #filterExec := TRUE;
+	        #st := 2;
+	        #tState := #now;
+	    END_IF;
+
+	    #setFilter(execute := #filterExec,
+	               proxyIndex := #rxProxyIndex,
+	               hwIoOfTransparentModul := #hwIdCmCan,
+	               cntOfFilter := 7,
+	               filterData := #filters);
+
+	    IF #st = 2 THEN
+	        IF #setFilter.done THEN
+	            #filterExec := FALSE;
+	            #st := 10;
+	        ELSIF #setFilter.error OR "VTC_Elapsed"(since := #tState, now := #now) > T#5S THEN
+	            #diag.filterStatus := #setFilter.status;
+	            #filterExec := FALSE;
+	            #st := 900;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Ontvangen (één frame per cyclus)
+	    #rcv(enable := #st >= 10,
+	         canModulStatusByte := #canStatus,
+	         deviceType := FALSE,
+	         ignoreRcvFilterSetting := FALSE,
+	         resetRcvMsgBuffer := FALSE,
+	         ackMessage := #rxAck,
+	         inputArea := #rxProxyIn,
+	         outputArea := #rxProxyOut,
+	         messageData := #rxData);
+	    #diag.rcvStatus := #rcv.status;
+
+	    #rxAck := #rcv.valid AND NOT #rxAck;
+
+	    IF #rxAck THEN
+	        #diag.rxFrames := #diag.rxFrames + 1;
+	        #pf := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 16));
+	        #ps := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 8));
+	        #sa := DWORD_TO_BYTE(#rcv.messageId);
+
+	        // ---- VT → ECU (PGN 0xE600), één frame
+	        IF #pf = 16#E6 AND #sa = #vtAddress THEN
+	            IF #rxData[0] = 16#FE THEN   // VT Status (elke seconde)
+	                #diag.vtSeen := TRUE;
+	                #diag.onScreen := #rxData[1] = #myAddress;
+	                #diag.vtActiveMask := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#rxData[3]), N := 8) OR BYTE_TO_WORD(#rxData[2]));
+	                #tVtStatus := #now;
+	            ELSIF #ps = #myAddress THEN
+	                FOR #i := 0 TO 7 DO
+	                    #msg[#i] := #rxData[#i];
+	                END_FOR;
+	                #msgLen := 8;
+	                #haveMsg := TRUE;
+	            END_IF;
+
+	        // ---- TP.CM van de VT naar ons
+	        ELSIF #pf = 16#EC AND #ps = #myAddress AND #sa = #vtAddress THEN
+	            IF #rxData[5] = 16#00 AND #rxData[6] = 16#E7 AND #rxData[7] = 16#00 THEN
+	                // over ons bericht naar de VT
+	                IF #rxData[0] = 16#11 AND (#tpState = 2 OR #tpState = 3) THEN   // CTS
+	                    #n := BYTE_TO_INT(#rxData[1]);
+	                    IF #n > 0 THEN
+	                        #tpNext := BYTE_TO_INT(#rxData[2]);
+	                        #tpEnd := #tpNext + #n - 1;
+	                        IF #tpEnd > #tpPackets THEN
+	                            #tpEnd := #tpPackets;
+	                        END_IF;
+	                        #tpState := 3;
+	                    END_IF;
+	                    #tTp := #now;   // ook bij CTS met 0 pakketten (VT vraagt wachten)
+	                ELSIF #rxData[0] = 16#13 AND #tpState >= 2 AND #tpState <= 3 THEN   // End of Message Ack
+	                    #tpState := 5;
+	                ELSIF #rxData[0] = 16#FF AND #tpState >= 1 AND #tpState <= 3 THEN   // Abort
+	                    #diag.tpAbortReason := #rxData[1];
+	                    #tpState := 9;
+	                END_IF;
+	            ELSIF #rxData[5] = 16#00 AND #rxData[6] = 16#E6 AND #rxData[7] = 16#00 THEN
+	                // bericht van de VT naar ons via TP
+	                IF #rxData[0] = 16#10 THEN   // Request To Send
+	                    #rxTpLen := WORD_TO_INT(SHL(IN := BYTE_TO_WORD(#rxData[2]), N := 8) OR BYTE_TO_WORD(#rxData[1]));
+	                    #rxTpPackets := BYTE_TO_INT(#rxData[3]);
+	                    #rxTpMax := BYTE_TO_INT(#rxData[4]);
+	                    IF #rxTpMax = 0 THEN
+	                        #rxTpMax := 255;
+	                    END_IF;
+	                    IF #rxTpLen > 300 OR #rxTpLen < 9 OR #rxTpPackets <> (#rxTpLen + 6) / 7 THEN
+	                        #d := #ff8;
+	                        #d[0] := 16#FF;   // Abort, reden 2 = te weinig geheugen
+	                        #d[1] := 16#02;
+	                        #d[5] := 16#00;
+	                        #d[6] := 16#E6;
+	                        #d[7] := 16#00;
+	                        #ok := "VTC_Push"(id := #idTpCm, data := #d, q := #q);
+	                        #rxTpState := 0;
+	                        #diag.rxTpAborts := #diag.rxTpAborts + 1;
+	                    ELSE
+	                        #rxTpNext := 1;
+	                        #rxTpState := 1;
+	                        #rxTpCts := TRUE;
+	                        #tRxTp := #now;
+	                    END_IF;
+	                ELSIF #rxData[0] = 16#FF THEN   // Abort door de VT
+	                    #rxTpState := 0;
+	                    #diag.rxTpAborts := #diag.rxTpAborts + 1;
+	                END_IF;
+	            END_IF;
+
+	        // ---- TP.DT van de VT naar ons
+	        ELSIF #pf = 16#EB AND #ps = #myAddress AND #sa = #vtAddress AND #rxTpState = 1 THEN
+	            #n := BYTE_TO_INT(#rxData[0]);
+	            IF #n = #rxTpNext THEN
+	                FOR #k := 0 TO 6 DO
+	                    #idx := (#n - 1) * 7 + #k;
+	                    IF #idx < #rxTpLen THEN
+	                        #rxTpBuf[#idx] := #rxData[#k + 1];
+	                    END_IF;
+	                END_FOR;
+	                #rxTpNext := #rxTpNext + 1;
+	                #tRxTp := #now;
+	                IF #rxTpNext > #rxTpPackets THEN   // compleet: End of Message Ack
+	                    #d := #ff8;
+	                    #d[0] := 16#13;
+	                    #d[1] := INT_TO_BYTE(#rxTpLen MOD 256);
+	                    #d[2] := INT_TO_BYTE(#rxTpLen / 256);
+	                    #d[3] := INT_TO_BYTE(#rxTpPackets);
+	                    #d[5] := 16#00;
+	                    #d[6] := 16#E6;
+	                    #d[7] := 16#00;
+	                    #ok := "VTC_Push"(id := #idTpCm, data := #d, q := #q);
+	                    #rxTpState := 0;
+	                    FOR #i := 0 TO #rxTpLen - 1 DO
+	                        #msg[#i] := #rxTpBuf[#i];
+	                    END_FOR;
+	                    #msgLen := #rxTpLen;
+	                    #haveMsg := TRUE;
+	                ELSIF #rxTpNext > #rxTpWinEnd THEN   // venster op: volgende CTS
+	                    #rxTpCts := TRUE;
+	                END_IF;
+	            END_IF;
+	        END_IF;
+	    END_IF;
+
+	    // CTS sturen voor het volgende venster van pakketten
+	    IF #rxTpCts AND #rxTpState = 1 THEN
+	        #n := #rxTpPackets - #rxTpNext + 1;
+	        IF #n > #rxTpMax THEN
+	            #n := #rxTpMax;
+	        END_IF;
+	        #d := #ff8;
+	        #d[0] := 16#11;
+	        #d[1] := INT_TO_BYTE(#n);
+	        #d[2] := INT_TO_BYTE(#rxTpNext);
+	        #d[5] := 16#00;
+	        #d[6] := 16#E6;
+	        #d[7] := 16#00;
+	        IF "VTC_Push"(id := #idTpCm, data := #d, q := #q) THEN
+	            #rxTpWinEnd := #rxTpNext + #n - 1;
+	            #rxTpCts := FALSE;
+	        END_IF;
+	    END_IF;
+	    IF #rxTpState = 1 AND "VTC_Elapsed"(since := #tRxTp, now := #now) > T#1250MS THEN   // VT zwijgt
+	        #rxTpState := 0;
+	        #rxTpCts := FALSE;
+	        #diag.rxTpAborts := #diag.rxTpAborts + 1;
+	    END_IF;
+	END_REGION
+
+	REGION Bericht van de VT verwerken
+	    IF #haveMsg THEN
+	        CASE BYTE_TO_INT(#msg[0]) OF
+	            0, 1:  // Soft Key Activation / Button Activation: code, object-ID, ouder-ID, toetscode
+	                #oid := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[3]), N := 8) OR BYTE_TO_WORD(#msg[2]));
+	                #found := FALSE;
+	                FOR #j := LOWER_BOUND(ARR := #key, DIM := 1) TO UPPER_BOUND(ARR := #key, DIM := 1) DO
+	                    IF #key[#j].id = #oid AND #oid <> 65535 THEN
+	                        #found := TRUE;
+	                        CASE BYTE_TO_INT(#msg[1]) OF
+	                            0:  // losgelaten
+	                                IF #key[#j].pressed THEN
+	                                    #key[#j].onRelease := TRUE;
+	                                END_IF;
+	                                #key[#j].pressed := FALSE;
+	                            1:  // ingedrukt
+	                                #key[#j].pressed := TRUE;
+	                                #key[#j].onPress := TRUE;
+	                                #key[#j].count := #key[#j].count + 1;
+	                            2:  // nog steeds ingedrukt
+	                                #key[#j].pressed := TRUE;
+	                            3:  // indrukken afgebroken
+	                                #key[#j].pressed := FALSE;
+	                        END_CASE;
+	                    END_IF;
+	                END_FOR;
+	                IF #echoResponses THEN
+	                    FOR #i := 0 TO 7 DO
+	                        #d[#i] := #msg[#i];
+	                    END_FOR;
+	                    #ok := "VTC_Push"(id := #idVtCmd, data := #d, q := #q);
+	                END_IF;
+
+	            5:  // VT Change Numeric Value: object-ID, waarde (32 bit)
+	                #oid := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[2]), N := 8) OR BYTE_TO_WORD(#msg[1]));
+	                #v := DWORD_TO_UDINT(SHL(IN := BYTE_TO_DWORD(#msg[7]), N := 24) OR SHL(IN := BYTE_TO_DWORD(#msg[6]), N := 16)
+	                                     OR SHL(IN := BYTE_TO_DWORD(#msg[5]), N := 8) OR BYTE_TO_DWORD(#msg[4]));
+	                #found := FALSE;
+	                FOR #j := LOWER_BOUND(ARR := #num, DIM := 1) TO UPPER_BOUND(ARR := #num, DIM := 1) DO
+	                    IF #oid <> 65535 AND (#num[#j].id = #oid OR #num[#j].varId = #oid) THEN
+	                        #found := TRUE;
+	                        #num[#j].value := #v;
+	                        #num[#j].fromVt := TRUE;
+	                        #num[#j].dirty := FALSE;
+	                    END_IF;
+	                END_FOR;
+	                IF #echoResponses THEN
+	                    FOR #i := 0 TO 7 DO
+	                        #d[#i] := #msg[#i];
+	                    END_FOR;
+	                    #ok := "VTC_Push"(id := #idVtCmd, data := #d, q := #q);
+	                END_IF;
+
+	            8:  // VT Change String Value: object-ID, lengte, tekens
+	                #oid := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[2]), N := 8) OR BYTE_TO_WORD(#msg[1]));
+	                #sLen := BYTE_TO_INT(#msg[3]);
+	                IF #sLen > #msgLen - 4 THEN
+	                    #sLen := #msgLen - 4;
+	                END_IF;
+	                IF #sLen > 254 THEN
+	                    #sLen := 254;
+	                END_IF;
+	                IF #sLen < 0 THEN
+	                    #sLen := 0;
+	                END_IF;
+	                FOR #i := 0 TO #sLen - 1 DO
+	                    #chars[#i] := BYTE_TO_CHAR(#msg[4 + #i]);
+	                END_FOR;
+	                #found := FALSE;
+	                FOR #j := LOWER_BOUND(ARR := #str, DIM := 1) TO UPPER_BOUND(ARR := #str, DIM := 1) DO
+	                    IF #oid <> 65535 AND (#str[#j].id = #oid OR #str[#j].varId = #oid) THEN
+	                        #found := TRUE;
+	                        Chars_TO_Strg(Chars := #chars,
+	                                      pChars := 0,
+	                                      Cnt := INT_TO_UINT(#sLen),
+	                                      Strg => #str[#j].text);
+	                        #str[#j].fromVt := TRUE;
+	                        #str[#j].dirty := FALSE;
+	                    END_IF;
+	                END_FOR;
+
+	            192:  // 0xC0 Get Memory-antwoord
+	                #diag.vtVersion := BYTE_TO_USINT(#msg[1]);
+	                #diag.memoryOk := #msg[2] = 16#00;
+	                #memResp := TRUE;
+	                #found := TRUE;
+
+	            199:  // 0xC7 Get Hardware-antwoord
+	                #diag.dataMaskWidth := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[5]), N := 8) OR BYTE_TO_WORD(#msg[4]));
+	                #diag.dataMaskHeight := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[7]), N := 8) OR BYTE_TO_WORD(#msg[6]));
+	                #hwResp := TRUE;
+	                #found := TRUE;
+
+	            18:  // 0x12 End of Object Pool-antwoord
+	                #diag.eopErrorCodes := #msg[1];
+	                #diag.eopFaultyParent := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[3]), N := 8) OR BYTE_TO_WORD(#msg[2]));
+	                #diag.eopFaultyObject := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[5]), N := 8) OR BYTE_TO_WORD(#msg[4]));
+	                #diag.eopPoolErrors := #msg[6];
+	                #eopResp := TRUE;
+	                #found := TRUE;
+
+	            160, 161:  // 0xA0 Hide/Show, 0xA1 Enable/Disable: object-ID, toestand, fout
+	                #found := TRUE;
+	                IF #msg[4] <> 16#00 THEN
+	                    #diag.cmdErrors := #diag.cmdErrors + 1;
+	                    #diag.lastCmdFunction := #msg[0];
+	                    #diag.lastCmdObject := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[2]), N := 8) OR BYTE_TO_WORD(#msg[1]));
+	                    #diag.lastCmdError := #msg[4];
+	                END_IF;
+
+	            169, 174:  // 0xA9 Change Numeric Value, 0xAE Change Active Mask: object-ID, fout
+	                #found := TRUE;
+	                IF #msg[3] <> 16#00 THEN
+	                    #diag.cmdErrors := #diag.cmdErrors + 1;
+	                    #diag.lastCmdFunction := #msg[0];
+	                    #diag.lastCmdObject := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[2]), N := 8) OR BYTE_TO_WORD(#msg[1]));
+	                    #diag.lastCmdError := #msg[3];
+	                END_IF;
+
+	            179:  // 0xB3 Change String Value: object-ID (byte 3-4), fout (byte 5)
+	                #found := TRUE;
+	                IF #msg[5] <> 16#00 THEN
+	                    #diag.cmdErrors := #diag.cmdErrors + 1;
+	                    #diag.lastCmdFunction := #msg[0];
+	                    #diag.lastCmdObject := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[4]), N := 8) OR BYTE_TO_WORD(#msg[3]));
+	                    #diag.lastCmdError := #msg[5];
+	                END_IF;
+	            ELSE
+	                #found := TRUE;   // andere meldingen: niet nodig
+	        END_CASE;
+
+	        IF BYTE_TO_INT(#msg[0]) <= 8 THEN
+	            #diag.events := #diag.events + 1;
+	            IF NOT #found THEN
+	                #diag.unknownEvents := #diag.unknownEvents + 1;
+	                #diag.lastUnknownId := #oid;
+	            END_IF;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Toestandsmachine
+	    CASE #st OF
+	        10:  // Address Claim: onze NAME op PGN 0xEE00 aan iedereen
+	            #ok := "VTC_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q);
+	            #tState := #now;
+	            #st := 11;
+
+	        11:  // wachten op eventuele conflicten
+	            IF "VTC_Elapsed"(since := #tState, now := #now) >= T#300MS THEN
+	                #st := 20;
+	            END_IF;
+
+	        20:  // wachten op VT Status van de terminal
+	            IF #diag.vtSeen THEN
+	                #st := 30;
+	            END_IF;
+
+	        30:  // Working Set Master + eerste Maintenance + Get Memory
+	            #d := #ff8;
+	            #d[0] := 16#01;   // 1 lid in de werkset
+	            #ok := "VTC_Push"(id := 16#1CFE0D00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q);
+
+	            #d := #ff8;
+	            #d[0] := 16#FF;   // Working Set Maintenance
+	            #d[1] := 16#01;   // initiating bit
+	            #d[2] := #vtVersionForPool;
+	            #ok := "VTC_Push"(id := #idVtCmd, data := #d, q := #q);
+	            #tMaint := #now;
+
+	            #d := #ff8;
+	            #d[0] := 16#C0;   // Get Memory: benodigde bytes als 32-bit getal
+	            #d[2] := DWORD_TO_BYTE(UDINT_TO_DWORD(#poolSize));
+	            #d[3] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#poolSize), N := 8));
+	            #d[4] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#poolSize), N := 16));
+	            #d[5] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#poolSize), N := 24));
+	            #memResp := FALSE;
+	            #ok := "VTC_Push"(id := #idVtCmd, data := #d, q := #q);
+	            #tState := #now;
+	            #st := 40;
+
+	        40:  // wachten op Get Memory-antwoord
+	            IF #memResp THEN
+	                IF #diag.memoryOk THEN
+	                    #d := #ff8;
+	                    #d[0] := 16#C7;   // Get Hardware (diagnose)
+	                    #hwResp := FALSE;
+	                    #ok := "VTC_Push"(id := #idVtCmd, data := #d, q := #q);
+	                    #tState := #now;
+	                    #st := 45;
+	                ELSE
+	                    #st := 901;   // te weinig geheugen in de VT
+	                END_IF;
+	            ELSIF "VTC_Elapsed"(since := #tState, now := #now) > T#3S THEN
+	                #st := 902;
+	            END_IF;
+
+	        45:  // Get Hardware-antwoord afwachten (max. 1 s), dan de delen van de pool controleren
+	            IF #hwResp OR "VTC_Elapsed"(since := #tState, now := #now) > T#1S THEN
+	                // elk deel 1..1784 bytes (één TP-overdracht), binnen 'pool', samen precies poolSize
+	                #ok := #poolSize > 0 AND #chunkCount > 0
+	                    AND UINT_TO_DINT(#chunkCount) <= UPPER_BOUND(ARR := #chunkStart, DIM := 1) - LOWER_BOUND(ARR := #chunkStart, DIM := 1) + 1
+	                    AND UINT_TO_DINT(#chunkCount) <= UPPER_BOUND(ARR := #chunkLength, DIM := 1) - LOWER_BOUND(ARR := #chunkLength, DIM := 1) + 1
+	                    AND UDINT_TO_DINT(#poolSize) <= UPPER_BOUND(ARR := #pool, DIM := 1) - LOWER_BOUND(ARR := #pool, DIM := 1) + 1;
+	                #total := 0;
+	                IF #ok THEN
+	                    FOR #j := 0 TO UINT_TO_DINT(#chunkCount) - 1 DO
+	                        #chStart := #chunkStart[LOWER_BOUND(ARR := #chunkStart, DIM := 1) + #j];
+	                        #chLen := #chunkLength[LOWER_BOUND(ARR := #chunkLength, DIM := 1) + #j];
+	                        IF #chLen = 0 OR #chLen > 1784 OR #chStart + UINT_TO_UDINT(#chLen) > #poolSize THEN
+	                            #ok := FALSE;
+	                        END_IF;
+	                        #total := #total + UINT_TO_UDINT(#chLen);
+	                    END_FOR;
+	                END_IF;
+	                IF #ok AND #total = #poolSize THEN
+	                    #chunkIdx := 0;
+	                    #diag.poolChunks := #chunkCount;
+	                    #st := 47;
+	                ELSE
+	                    #st := 903;   // pool leeg of delen ongeldig
+	                END_IF;
+	            END_IF;
+
+	        47:  // volgend deel klaarzetten: Object Pool Transfer (16#11) met hele objecten
+	            #chStart := #chunkStart[LOWER_BOUND(ARR := #chunkStart, DIM := 1) + UINT_TO_DINT(#chunkIdx)];
+	            #chLen := #chunkLength[LOWER_BOUND(ARR := #chunkLength, DIM := 1) + UINT_TO_DINT(#chunkIdx)];
+	            #lb := LOWER_BOUND(ARR := #pool, DIM := 1) + UDINT_TO_DINT(#chStart);
+	            #tpBuf[0] := 16#11;
+	            FOR #i := 0 TO UINT_TO_INT(#chLen) - 1 DO
+	                #tpBuf[#i + 1] := #pool[#lb + #i];
+	            END_FOR;
+	            #tpLen := #chLen + 1;
+	            #tpState := 1;
+	            #diag.poolChunk := #chunkIdx + 1;
+	            #st := 50;
+
+	        50:  // pool-overdracht loopt (TP), deel per deel
+	            IF #tpState = 5 THEN
+	                #tpState := 0;
+	                #chunkIdx := #chunkIdx + 1;
+	                IF #chunkIdx < #chunkCount THEN
+	                    #st := 47;   // volgend deel
+	                ELSE
+	                    #d := #ff8;
+	                    #d[0] := 16#12;   // End of Object Pool
+	                    #eopResp := FALSE;
+	                    #ok := "VTC_Push"(id := #idVtCmd, data := #d, q := #q);
+	                    #tState := #now;
+	                    #st := 60;
+	                END_IF;
+	            ELSIF #tpState = 9 THEN
+	                #tpState := 0;
+	                #st := 904;
+	            END_IF;
+
+	        60:  // VT controleert de pool
+	            IF #eopResp THEN
+	                IF #diag.eopErrorCodes = 16#00 THEN
+	                    #resync := TRUE;   // scherm gelijkzetten met de PLC
+	                    #st := 70;
+	                ELSE
+	                    #st := 905;
+	                END_IF;
+	            ELSIF "VTC_Elapsed"(since := #tState, now := #now) > T#10S THEN
+	                #st := 906;
+	            END_IF;
+
+	        70:  // actief: zie region Opdrachten
+	            IF #tpState = 5 OR #tpState = 9 THEN   // tekst-TP afgerond of afgebroken
+	                #tpState := 0;
+	            END_IF;
+	    END_CASE;
+
+	    // VT verdwenen? (geen VT Status gedurende 3 s) → opnieuw aanmelden en pool laden
+	    IF #st >= 30 AND #st < 900 AND "VTC_Elapsed"(since := #tVtStatus, now := #now) > T#3S THEN
+	        #diag.vtSeen := FALSE;
+	        #diag.onScreen := FALSE;
+	        #tpState := 0;
+	        #rxTpState := 0;
+	        #st := 20;
+	    END_IF;
+	END_REGION
+
+	REGION Opdrachten naar de VT (PLC → scherm)
+	    IF #st = 70 THEN
+	        IF #resync THEN   // na het laden van de pool: alles één keer sturen
+	            FOR #j := LOWER_BOUND(ARR := #num, DIM := 1) TO UPPER_BOUND(ARR := #num, DIM := 1) DO
+	                #num[#j].dirty := #num[#j].id <> 65535;
+	                #num[#j].fromVt := FALSE;
+	                #num[#j].t := #now - #minInterval - T#1MS;
+	            END_FOR;
+	            FOR #j := LOWER_BOUND(ARR := #str, DIM := 1) TO UPPER_BOUND(ARR := #str, DIM := 1) DO
+	                #str[#j].dirty := #str[#j].id <> 65535;
+	                #str[#j].fromVt := FALSE;
+	                #str[#j].t := #now - #minInterval - T#1MS;
+	            END_FOR;
+	            FOR #j := LOWER_BOUND(ARR := #flag, DIM := 1) TO UPPER_BOUND(ARR := #flag, DIM := 1) DO
+	                #flag[#j].dirty := #flag[#j].id <> 65535;
+	            END_FOR;
+	            #ctrl.maskDirty := TRUE;
+	            #resync := FALSE;
+	        END_IF;
+
+	        #sent := 0;
+
+	        // ---- Change Active Mask
+	        IF #ctrl.maskDirty AND #q.count <= 24 THEN
+	            IF #ctrl.mask = 65535 THEN
+	                #ctrl.maskDirty := FALSE;
+	            ELSE
+	                #d := #ff8;
+	                #d[0] := 16#AE;
+	                #d[1] := WORD_TO_BYTE(UINT_TO_WORD(#ctrl.wsId));
+	                #d[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#ctrl.wsId), N := 8));
+	                #d[3] := WORD_TO_BYTE(UINT_TO_WORD(#ctrl.mask));
+	                #d[4] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#ctrl.mask), N := 8));
+	                IF "VTC_Push"(id := #idVtCmd, data := #d, q := #q) THEN
+	                    #ctrl.maskDirty := FALSE;
+	                    #sent := #sent + 1;
+	                END_IF;
+	            END_IF;
+	        END_IF;
+
+	        // ---- Hide/Show en Enable/Disable
+	        #lb := LOWER_BOUND(ARR := #flag, DIM := 1);
+	        #ub := UPPER_BOUND(ARR := #flag, DIM := 1);
+	        FOR #m := #lb TO #ub DO
+	            IF #sent >= #maxPerCycle OR #q.count > 24 THEN
+	                EXIT;
+	            END_IF;
+	            #iFlag := #iFlag + 1;
+	            IF #iFlag < #lb OR #iFlag > #ub THEN
+	                #iFlag := #lb;
+	            END_IF;
+	            IF #flag[#iFlag].dirty AND #flag[#iFlag].id <> 65535 THEN
+	                #d := #ff8;
+	                #d[0] := #flag[#iFlag].cmd;
+	                #d[1] := WORD_TO_BYTE(UINT_TO_WORD(#flag[#iFlag].id));
+	                #d[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#flag[#iFlag].id), N := 8));
+	                #d[3] := BOOL_TO_BYTE(#flag[#iFlag].on);
+	                IF "VTC_Push"(id := #idVtCmd, data := #d, q := #q) THEN
+	                    #flag[#iFlag].dirty := FALSE;
+	                    #sent := #sent + 1;
+	                END_IF;
+	            END_IF;
+	        END_FOR;
+
+	        // ---- Change Numeric Value (naar de variabele als het object er een heeft)
+	        #lb := LOWER_BOUND(ARR := #num, DIM := 1);
+	        #ub := UPPER_BOUND(ARR := #num, DIM := 1);
+	        FOR #m := #lb TO #ub DO
+	            IF #sent >= #maxPerCycle OR #q.count > 24 THEN
+	                EXIT;
+	            END_IF;
+	            #iNum := #iNum + 1;
+	            IF #iNum < #lb OR #iNum > #ub THEN
+	                #iNum := #lb;
+	            END_IF;
+	            IF #num[#iNum].dirty AND #num[#iNum].id <> 65535
+	                AND "VTC_Elapsed"(since := #num[#iNum].t, now := #now) >= #minInterval THEN
+	                #tid := #num[#iNum].id;
+	                IF #num[#iNum].varId <> 65535 THEN
+	                    #tid := #num[#iNum].varId;
+	                END_IF;
+	                #v := #num[#iNum].value;
+	                #d := #ff8;
+	                #d[0] := 16#A9;
+	                #d[1] := WORD_TO_BYTE(UINT_TO_WORD(#tid));
+	                #d[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#tid), N := 8));
+	                #d[4] := DWORD_TO_BYTE(UDINT_TO_DWORD(#v));
+	                #d[5] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#v), N := 8));
+	                #d[6] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#v), N := 16));
+	                #d[7] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#v), N := 24));
+	                IF "VTC_Push"(id := #idVtCmd, data := #d, q := #q) THEN
+	                    #num[#iNum].dirty := FALSE;
+	                    #num[#iNum].t := #now;
+	                    #sent := #sent + 1;
+	                END_IF;
+	            END_IF;
+	        END_FOR;
+
+	        // ---- Change String Value: één tekst tegelijk; meer dan 3 tekens via TP
+	        IF #tpState = 0 AND #sent < #maxPerCycle AND #q.count <= 24 THEN
+	            #lb := LOWER_BOUND(ARR := #str, DIM := 1);
+	            #ub := UPPER_BOUND(ARR := #str, DIM := 1);
+	            FOR #m := #lb TO #ub DO
+	                #iStr := #iStr + 1;
+	                IF #iStr < #lb OR #iStr > #ub THEN
+	                    #iStr := #lb;
+	                END_IF;
+	                IF #str[#iStr].dirty AND #str[#iStr].id <> 65535
+	                    AND "VTC_Elapsed"(since := #str[#iStr].t, now := #now) >= #minInterval THEN
+	                    #tid := #str[#iStr].id;
+	                    IF #str[#iStr].varId <> 65535 THEN
+	                        #tid := #str[#iStr].varId;
+	                    END_IF;
+	                    #sLen := LEN(#str[#iStr].text);
+	                    IF #str[#iStr].maxLen > 0 AND #sLen > UINT_TO_INT(#str[#iStr].maxLen) THEN
+	                        #sLen := UINT_TO_INT(#str[#iStr].maxLen);
+	                    END_IF;
+	                    #tpBuf[0] := 16#B3;
+	                    #tpBuf[1] := WORD_TO_BYTE(UINT_TO_WORD(#tid));
+	                    #tpBuf[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#tid), N := 8));
+	                    #tpBuf[3] := INT_TO_BYTE(#sLen);
+	                    #tpBuf[4] := 16#00;
+	                    FOR #i := 1 TO #sLen DO
+	                        #tpBuf[4 + #i] := CHAR_TO_BYTE(#str[#iStr].text[#i]);
+	                    END_FOR;
+	                    #tpLen := INT_TO_UINT(5 + #sLen);
+	                    IF #tpLen <= 8 THEN   // past in één frame
+	                        #d := #ff8;
+	                        FOR #i := 0 TO UINT_TO_INT(#tpLen) - 1 DO
+	                            #d[#i] := #tpBuf[#i];
+	                        END_FOR;
+	                        #ok := "VTC_Push"(id := #idVtCmd, data := #d, q := #q);
+	                    ELSE
+	                        #tpState := 1;
+	                    END_IF;
+	                    #str[#iStr].dirty := FALSE;
+	                    #str[#iStr].t := #now;
+	                    #sent := #sent + 1;
+	                    EXIT;
+	                END_IF;
+	            END_FOR;
+	        END_IF;
+	        #diag.commands := #diag.commands + INT_TO_UDINT(#sent);
+	    END_IF;
+	END_REGION
+
+	REGION Transport protocol – zender (RTS/CTS)
+	    CASE #tpState OF
+	        1:  // Request To Send
+	            #tpPackets := (UINT_TO_INT(#tpLen) + 6) / 7;
+	            #d[0] := 16#10;
+	            #d[1] := WORD_TO_BYTE(UINT_TO_WORD(#tpLen));
+	            #d[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#tpLen), N := 8));
+	            #d[3] := INT_TO_BYTE(#tpPackets);
+	            #d[4] := 16#FF;   // geen maximum per CTS
+	            #d[5] := 16#00;   // PGN 0x00E700 (ECU → VT)
+	            #d[6] := 16#E7;
+	            #d[7] := 16#00;
+	            IF "VTC_Push"(id := #idTpCm, data := #d, q := #q) THEN
+	                #tTp := #now;
+	                #tpState := 2;
+	            END_IF;
+
+	        2:  // wachten op CTS of EoMA
+	            IF "VTC_Elapsed"(since := #tTp, now := #now) > T#3S THEN
+	                #d := #ff8;
+	                #d[0] := 16#FF;   // Abort, reden 3 = timeout
+	                #d[1] := 16#03;
+	                #d[5] := 16#00;
+	                #d[6] := 16#E7;
+	                #d[7] := 16#00;
+	                #ok := "VTC_Push"(id := #idTpCm, data := #d, q := #q);
+	                #diag.tpAbortReason := 16#03;
+	                #tpState := 9;
+	            END_IF;
+
+	        3:  // gevraagde DT-pakketten in de wachtrij zetten zolang er plaats is
+	            WHILE #tpNext <= #tpEnd AND #q.count < 32 DO
+	                #d[0] := INT_TO_BYTE(#tpNext);
+	                FOR #k := 0 TO 6 DO
+	                    #idx := (#tpNext - 1) * 7 + #k;
+	                    IF #idx < UINT_TO_INT(#tpLen) THEN
+	                        #d[#k + 1] := #tpBuf[#idx];
+	                    ELSE
+	                        #d[#k + 1] := 16#FF;
+	                    END_IF;
+	                END_FOR;
+	                #ok := "VTC_Push"(id := #idTpDt, data := #d, q := #q);
+	                #tpNext := #tpNext + 1;
+	            END_WHILE;
+	            IF #tpNext > #tpEnd THEN
+	                #tTp := #now;
+	                #tpState := 2;
+	            END_IF;
+	    END_CASE;
+	END_REGION
+
+	REGION Working Set Maintenance (elke seconde)
+	    IF #st >= 40 AND #st < 900 AND "VTC_Elapsed"(since := #tMaint, now := #now) >= T#1S THEN
+	        #d := #ff8;
+	        #d[0] := 16#FF;
+	        #d[1] := 16#00;
+	        #d[2] := #vtVersionForPool;
+	        IF "VTC_Push"(id := #idVtCmd, data := #d, q := #q) THEN
+	            #tMaint := #now;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Zenden (één frame per handshake van de transmit proxy)
+	    CASE #txState OF
+	        0:
+	            IF #q.count > 0 THEN
+	                #txId := #q.frame[#q.head].id;
+	                #txData := #q.frame[#q.head].data;
+	                #txExec := TRUE;
+	                #txState := 1;
+	            END_IF;
+	        1:
+	            IF #snd.done OR #snd.error THEN
+	                IF #snd.error THEN
+	                    #diag.sendStatus := #snd.status;
+	                ELSE
+	                    #diag.txFrames := #diag.txFrames + 1;
+	                END_IF;
+	                #q.head := (#q.head + 1) MOD 32;
+	                #q.count := #q.count - 1;
+	                #txExec := FALSE;
+	                #txState := 2;
+	            END_IF;
+	        2:  // één aanroep met execute = FALSE voor de volgende flank
+	            #txState := 0;
+	    END_CASE;
+
+	    #snd(execute := #txExec,
+	         messageIdFormat := TRUE,
+	         messageId := #txId,
+	         rtrFrame := FALSE,
+	         canModulStatusByte := #canStatus,
+	         deviceType := FALSE,
+	         inputArea := #txProxyIn,
+	         outputArea := #txProxyOut,
+	         messageData := #txData);
+
+	    IF #st = 0 THEN
+	        #txExec := FALSE;
+	        #txState := 0;
+	    END_IF;
+	END_REGION
+
+	REGION Uitgangen
+	    #state := #st;
+	    #running := #st = 70;
+	    #error := #st >= 900;
+	    #ctrl.ready := #st = 70;
+	    #ctrl.onScreen := #diag.onScreen;
+	    #ctrl.shownMask := #diag.vtActiveMask;
+	    CASE #st OF
+	        0: #diag.stateText := 'uit';
+	        1, 2: #diag.stateText := 'filter instellen';
+	        10, 11: #diag.stateText := 'address claim';
+	        20: #diag.stateText := 'wacht op VT Status';
+	        30, 40: #diag.stateText := 'Get Memory';
+	        45: #diag.stateText := 'Get Hardware';
+	        47, 50: #diag.stateText := 'pool uploaden';
+	        60: #diag.stateText := 'VT controleert pool';
+	        70: #diag.stateText := 'actief';
+	        900: #diag.stateText := 'fout: filter (zie filterStatus)';
+	        901: #diag.stateText := 'fout: te weinig VT-geheugen';
+	        902: #diag.stateText := 'fout: geen antwoord Get Memory';
+	        903: #diag.stateText := 'fout: pool of delen ongeldig';
+	        904: #diag.stateText := 'fout: TP afgebroken (tpAbortReason)';
+	        905: #diag.stateText := 'fout: pool geweigerd (eop...)';
+	        906: #diag.stateText := 'fout: geen antwoord End of Pool';
+	    END_CASE;
+	END_REGION
+END_FUNCTION_BLOCK

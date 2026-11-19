@@ -9,6 +9,7 @@ import { validate } from './iso/validate.js';
 import { tiaSource } from './export/tia.js';
 import { codesysGvl, codesysXml } from './export/codesys.js';
 import { listing } from './export/listing.js';
+import { ioPlan, tiaIoDb, tiaIoMap, inIo } from './export/io.js';
 
 /** The 119 bytes of vt_test_project/VT_TestPool.iop (from pool_listing.txt). */
 const TEST_POOL = `
@@ -140,6 +141,36 @@ export function runTests(log = (s) => console.log(s)) {
   const xml = codesysXml(p);
   check('CODESYS: PLCopen XML', xml.includes('<globalVars name="GVL_VtPool"') && (xml.match(/<simpleValue value="16#/g) || []).length === 119);
   check('listing', listing(p).includes('object 11000'));
+
+  // 9. PLC interface (VT_Io + VT_IoMap)
+  const ioP = ioPlan(p);
+  check('interface: nieuw project heeft 2 teksten', ioP.fields.out.length === 2 && ioP.tables.str.length === 2 && !ioP.fields.in.length);
+  const allIo = ioPlan(all);
+  const kinds = (t) => allIo.tables[t].length;
+  check('interface: alle soorten in het testproject', kinds('num') > 3 && kinds('str') > 1 && kinds('flag') === 1 && kinds('key') === 2,
+    JSON.stringify({ num: kinds('num'), str: kinds('str'), flag: kinds('flag'), key: kinds('key') }));
+  const outStrWithVar = Object.values(all.objects).find((o) => o.type === 11 && o.variableReference !== 0xffff);
+  check('interface: tekst met variabele krijgt geen eigen veld', !inIo(all, outStrWithVar));
+  for (const [name, proj] of [['nieuw project', p], ['testproject', all], ['leeg', (() => { const e = newProject(); delete e.objects[11000]; delete e.objects[11001]; e.objects[0].children = []; e.objects[1000].children = []; return e; })()]]) {
+    const db = tiaIoDb(proj), fc = tiaIoMap(proj);
+    const declared = new Set();
+    let section = null;
+    for (const line of db.split('\n')) {
+      const m = line.match(/^ {6}(\w+) : Struct/);
+      if (m) section = m[1];
+      const f = line.match(/^ {9}(\w+) :/);
+      if (f && section) declared.add(`${section}.${f[1]}`);
+    }
+    const used = [...fc.matchAll(/"VT_Io"\.(out|in)\.(\w+)/g)].map((m) => `${m[1]}.${m[2]}`);
+    const missing = used.filter((u) => !declared.has(u));
+    check(`interface ${name}: FC gebruikt enkel velden uit de DB`, missing.length === 0, missing.join(', '));
+    check(`interface ${name}: geen lege arrays of structs`, !/Array\[0\.\.-1\]/.test(db) && /none : Bool|: /.test(db));
+    const opens = (fc.match(/\bIF\b/g) || []).length - (fc.match(/\bEND_IF\b/g) || []).length;
+    check(`interface ${name}: IF/END_IF in balans`, opens === 0);
+  }
+  const quoted = newProject();
+  quoted.objects[11000].value = "it's $5";
+  check('interface: tekst met $ en \' correct in SCL', tiaIoDb(quoted).includes("out.Hoofdtekst := 'it$'s $$5';"));
   check('normaliseren laat project ongewijzigd', JSON.stringify(normalizeProject(JSON.parse(JSON.stringify(p)))) === JSON.stringify(p));
 
   log(fails ? `\n${fails} test(s) mislukt` : '\nAlle tests geslaagd');

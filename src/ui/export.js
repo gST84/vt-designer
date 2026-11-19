@@ -5,12 +5,17 @@ import { validate } from '../iso/validate.js';
 import { tiaSource } from '../export/tia.js';
 import { codesysGvl, codesysXml } from '../export/codesys.js';
 import { listing } from '../export/listing.js';
+import { tiaIoDb, tiaIoMap } from '../export/io.js';
 import { sanitizeName, label } from '../model.js';
 import { modal, toast } from './dialogs.js';
 
 const TARGETS = [
   { key: 'tia', label: 'TIA Portal', file: (p) => `${p.export.tiaDb}.db`, text: tiaSource,
     hint: 'Externe bronbestanden › Nieuw extern bestand toevoegen › dit .db-bestand › rechtsklik › Blokken genereren uit bron. Aan VT_TestClient: poolSize := "<DB>".size, chunkCount := "<DB>".chunkCount, pool := "<DB>".data, chunkStart := "<DB>".chunkStart, chunkLength := "<DB>".chunkLength; object-ID\'s als "<DB>".id.<naam>.' },
+  { key: 'io', label: 'TIA: interface-DB', file: (p) => `${p.export.ioDb}.db`, text: tiaIoDb,
+    hint: 'Voor FB VT_Client (isobus_project_bundle/vt_client). Importvolgorde: 01_VTC_Types.udt → pool-DB → deze DB → koppel-FC → 02_VT_Client.scl. Aan VT_Client: num/str/flag/key := "<DB>".sys.num/.str/.flag/.key, ctrl := "<DB>".sys.ctrl.' },
+  { key: 'iomap', label: 'TIA: koppel-FC', file: (p) => `${p.export.ioDb}Map.scl`, text: tiaIoMap,
+    hint: 'Elke cyclus aanroepen, na VT_Client en vóór je eigen logica. Hoort bij de interface-DB van dezelfde export: altijd samen opnieuw importeren.' },
   { key: 'gvl', label: 'CODESYS (GVL-tekst)', file: (p) => `${p.export.codesysGvl}.st`, text: codesysGvl,
     hint: 'Application › Object toevoegen › Globale variabelenlijst met dezelfde naam, en de tekst als declaratie plakken.' },
   { key: 'xml', label: 'CODESYS (PLCopen XML)', file: (p) => `${p.export.codesysGvl}.xml`, text: codesysXml,
@@ -43,7 +48,7 @@ export async function exportDialog(store, initial = 'tia') {
     store.edit((pp) => { pp.export.chunkMax = v; });
     refresh();
   };
-  opts.append(nameField('Naam DB (TIA Portal)', 'tiaDb'), nameField('Naam GVL (CODESYS)', 'codesysGvl'),
+  opts.append(nameField('Naam pool-DB (TIA)', 'tiaDb'), nameField('Naam interface-DB (TIA)', 'ioDb'), nameField('Naam GVL (CODESYS)', 'codesysGvl'),
     h('label', { class: 'field' }, h('span', null, 'Max. bytes per deel (TP)'), chunk));
 
   function refresh() {

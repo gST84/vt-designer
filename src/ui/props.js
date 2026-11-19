@@ -10,6 +10,7 @@ import { pictureUrl } from '../render.js';
 import { colourButton, confirmDlg, toast } from './dialogs.js';
 import { editCommand } from './macro.js';
 import { importPicture } from './picture.js';
+import { ioKind, inIo, ioDefault, ioFieldText } from '../export/io.js';
 
 export class Props {
   constructor(store, host, app) {
@@ -89,6 +90,9 @@ export class Props {
     if (o.type === 4 || o.type === 0 || o.type === 5) attrs.append(h('p', { class: 'hint' }, sizeHint(o, this.s.project)));
     this.host.append(sec('Attributen', attrs));
 
+    // PLC interface (DB VT_Io for FB VT_Client)
+    if (ioKind(o)) this.host.append(sec('PLC-koppeling', this.ioEditor(o)));
+
     // used by
     const refs = refsTo(this.s.project, o.id);
     if (refs.length) {
@@ -105,6 +109,25 @@ export class Props {
       h('p', { class: 'hint' }, `Terminal: datamasker ${p.settings.dmSize} × ${p.settings.dmSize}, softkeys ${p.settings.skWidth} × ${p.settings.skHeight} (${p.settings.skCount} stuks), VT-versie ${p.settings.vtVersion}.`),
       h('p', { class: 'hint keys' }, 'Klik een object om het te selecteren, dubbelklik om in een container of knop te gaan (Alt+klik: diepste object). ',
         'Pijltjes verschuiven (Shift: 10 px), Delete verwijdert, Esc kiest de ouder, Ctrl+D dupliceert, Ctrl+Z/Y.'));
+  }
+
+  /** Checkbox "in VT_Io" and the resulting field. */
+  ioEditor(o) {
+    const p = this.s.project;
+    const on = inIo(p, o);
+    const c = h('input', { type: 'checkbox', checked: on });
+    c.onchange = () => this.set((x, pp) => {
+      // back to "automatic" when the choice equals the default
+      if (c.checked === ioDefault(pp, x)) delete x.plcIo; else x.plcIo = c.checked;
+    }, true);
+    const k = ioKind(o);
+    const what = k.table === 'key' ? 'pressed, onPress en onRelease (één cyclus) en count'
+      : k.dir === 'in' ? 'de bediener vult het in; de PLC kan het ook schrijven'
+        : o.type === 3 ? 'TRUE = tonen, FALSE = verbergen' : 'de PLC schrijft, het scherm volgt';
+    return h('div', null,
+      h('label', { class: 'check' }, c, `In PLC-interface (${p.export.ioDb})`),
+      on ? h('div', { class: 'iofield' }, h('code', null, ioFieldText(p, o)), h('small', null, what)) : null,
+      o.plcIo === undefined ? null : h('small', { class: 'hint' }, 'Zelf gekozen (standaard: ' + (ioDefault(p, o) ? 'aan' : 'uit') + ').'));
   }
 
   // ---------- generic editors ----------

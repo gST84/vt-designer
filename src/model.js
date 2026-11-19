@@ -12,7 +12,7 @@ export const DEFAULT_SETTINGS = {
   grid: 5,
 };
 
-export const DEFAULT_EXPORT = { tiaDb: 'VT_Pool', codesysGvl: 'GVL_VtPool', chunkMax: 1784 };
+export const DEFAULT_EXPORT = { tiaDb: 'VT_Pool', ioDb: 'VT_Io', codesysGvl: 'GVL_VtPool', chunkMax: 1784 };
 
 /** Initial attribute values that differ from the schema defaults. */
 const INITIAL = {
