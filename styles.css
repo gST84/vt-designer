@@ -228,3 +228,8 @@ table.list tbody tr:hover { background: var(--accent-soft); cursor: pointer; }
   #right { order: 3; max-height: 50vh; border-left: none; border-top: 1px solid var(--line); }
   .form.cols2 { grid-template-columns: 1fr; }
 }
+
+/* implement dialog */
+.implement .product { position: relative; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+.implement .product > button.icon { position: absolute; top: 6px; right: 6px; }
+.implement h3 { margin: 12px 0 6px; font-size: 13px; }

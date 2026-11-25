@@ -61,6 +61,7 @@ const ICONS = {
   export: '<path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/><path d="M8.5 8v5M6.3 10.8 8.5 13l2.2-2.2"/>',
   settings: '<circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/>',
   check: '<path d="M2.5 8.5 6 12l7.5-8"/>',
+  implement: '<path d="M1.5 11.5h13"/><path d="M3 11.5V8.5h10v3"/><path d="M4.5 11.5v2M8 11.5v2M11.5 11.5v2"/><path d="M8 8.5V5.5M6 5.5h4"/>',
   // object types (toolbar)
   t11: '<path d="M3.5 4.5V3h9v1.5M8 3v10M6 13h4"/>',
   t12: '<path d="M6.5 2.5 5 13.5M11 2.5l-1.5 11M3 6h10.5M2.5 10h10.5"/>',

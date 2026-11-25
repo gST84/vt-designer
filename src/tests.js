@@ -12,6 +12,9 @@ import { listing } from './export/listing.js';
 import { ioPlan, tiaIoDb, tiaIoMap, inIo } from './export/io.js';
 import { zip, crc32, utf8 } from './zip.js';
 import { renderRoot } from './render.js';
+import { encodeObject as ddopObject, parseDdop, checkDdop } from './tc/ddop.js';
+import { buildDdop, poolForSections, sectionY, DDI } from './tc/build.js';
+import { tiaTcPool, ddopListing } from './export/tcpool.js';
 import { APP_VERSION, sclText } from './export/common.js';
 
 /** The 119 bytes of vt_test_project/VT_TestPool.iop (from pool_listing.txt). */
@@ -275,6 +278,54 @@ export function runTests(log = (s) => console.log(s)) {
   check('meter 224°→316° (zoals op de terminal): wijzer onderaan', Math.abs(xb - 50) < 1 && yb > 50, `${xb},${yb}`);
   const [xa, ya] = needle(158, 112, 0, 7);
   check('meter tegen de klok in: minimum bij de beginhoek (rechtsonder)', xa > 50 && ya > 50, `${xa},${ya}`);
+
+  // 12. task controller: DDOP objects, generator and what the PLC does with sections
+  const objs = [
+    { table: 'DVC', id: 0, designator: 'Spuit', softwareVersion: '1.0', name: [1, 2, 3, 4, 5, 6, 7, 8], serial: '42', structureLabel: 'ABCDE00', localization: [101, 110, 0x40, 0, 0, 0, 255] },
+    { table: 'DET', id: 1, type: 1, designator: 'Spuit', number: 0, parent: 0, children: [2, 3] },
+    { table: 'DPD', id: 2, ddi: 141, props: 1, triggers: 8, designator: 'Werkstand', presentation: 0xffff },
+    { table: 'DPT', id: 3, ddi: 134, value: -1500, designator: 'X', presentation: 4 },
+    { table: 'DVP', id: 4, offset: 0, scale: 0.001, decimals: 2, unit: 'm' },
+  ];
+  const dvcBytes = ddopObject(objs[0]);
+  check('DDOP: DVC begint met "DVC", ID, lengte en naam', String.fromCharCode(...dvcBytes.slice(0, 3)) === 'DVC' && dvcBytes[3] === 0 && dvcBytes[5] === 5);
+  check('DDOP: DPT met negatieve waarde', [...ddopObject(objs[3]).slice(7, 11)].join(',') === '36,250,255,255');
+  const rt = parseDdop(Uint8Array.from(objs.flatMap((o) => [...ddopObject(o)])));
+  rt[0].structureLabel = String.fromCharCode(...rt[0].structureLabel);
+  rt[4].scale = Math.round(rt[4].scale * 1e6) / 1e6;
+  check('DDOP: alle objecttypes heen en terug', JSON.stringify(rt) === JSON.stringify(objs), JSON.stringify(rt));
+  check('DDOP: geldige mini-pool', checkDdop(objs).length === 0, JSON.stringify(checkDdop(objs)));
+  check('DDOP: verwijzing naar onbestaand kind gemeld', checkDdop([...objs.slice(0, 1), { ...objs[1], children: [2, 99] }, ...objs.slice(2)]).some((e) => /99/.test(e.text)));
+
+  const tb = buildDdop({ maxSections: 20, sectionWidth: 3000, products: [{ name: 'Water', kind: 'volume', capacity: 3000 }, { name: 'Korrel', kind: 'mass', capacity: 500 }] });
+  check('TC-werktuig: geldige DDOP', tb.errors.length === 0, JSON.stringify(tb.errors));
+  const back = parseDdop(tb.bytes);
+  check('TC-werktuig: DDOP opnieuw in te lezen', back.length === tb.objects.length);
+  check('TC-werktuig: NAME en structuurlabel op de opgegeven plaats',
+    [...tb.bytes.slice(tb.nameOffset, tb.nameOffset + 8)].join() === '57,48,0,0,0,129,0,32' && String.fromCharCode(...tb.bytes.slice(tb.labelOffset, tb.labelOffset + 7)) === tb.structureLabel);
+  check('TC-werktuig: 20 secties en 2 groepen samengevatte werkstanden',
+    back.filter((o) => o.table === 'DET' && o.type === 4).length === 20 && back.filter((o) => o.ddi === DDI.setpointCondensedWorkState + 1).length === 1);
+  check('TC-werktuig: secties symmetrisch', sectionY(1, 2, 3000) === -1500 && sectionY(2, 2, 3000) === 1500);
+  for (const n of [1, 16, 17]) {
+    const pool = poolForSections(tb, n, { width: Array(20).fill(2500), y: Array.from({ length: 20 }, (_, i) => sectionY(i + 1, n, 2500)) });
+    const po = parseDdop(pool);
+    const boomO = po.find((o) => o.table === 'DET' && o.type === 2);
+    const widths = po.filter((o) => o.table === 'DPT' && o.ddi === DDI.actualWorkingWidth).map((o) => o.value);
+    check(`TC-werktuig met ${n} sectie(s): geldige pool`, checkDdop(po).length === 0, JSON.stringify(checkDdop(po)));
+    check(`TC-werktuig met ${n} sectie(s): ${n} secties, ${Math.ceil(n / 16)} groep(en), breedte aangepast`,
+      po.filter((o) => o.table === 'DET' && o.type === 4).length === n && boomO.children.length === tb.boom.fixedRefs + 2 * Math.ceil(n / 16) && widths.length === n && widths.every((w) => w === 2500));
+  }
+
+  const pt = newProject('TC');
+  pt.implement.enabled = true;
+  pt.implement.maxSections = 12;
+  const tcSrc = tiaTcPool(pt);
+  const tcB = buildDdop(pt.implement);
+  check('TC-pool: één data-toewijzing per byte', (tcSrc.match(/data\[\d+\] := 16#/g) || []).length === tcB.bytes.length);
+  check('TC-pool: één objectregel per object', (tcSrc.match(/objStart\[\d+\] := /g) || []).length === tcB.entries.length && tcSrc.includes(`objCount := ${tcB.entries.length};`));
+  check('TC-pool: titel met versie', /^TITLE = 'DDOP "Werktuig", max\. 12 secties - VT Designer /m.test(tcSrc));
+  check('TC-listing: elk object een regel', ddopListing(pt).split('\n').filter((l) => /^\s*\d+\s+\d+\s+(DVC|DET|DPD|DPT|DVP)/.test(l)).length === tcB.entries.length);
+  check('nieuw project: werktuig standaard uit', newProject().implement.enabled === false && Array.isArray(newProject().implement.products));
 
   // 11. zip for the TIA download (stored files)
   check('CRC-32 van "hello"', crc32(utf8('hello')) === 0x3610a686);

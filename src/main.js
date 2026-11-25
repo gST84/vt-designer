@@ -11,6 +11,7 @@ import { parsePool, encodePool } from './iso/codec.js';
 import { validate } from './iso/validate.js';
 import { TYPES, CHILD_TYPES, ROOT_TYPES, childVersion } from './iso/schema.js';
 import { APP_VERSION } from './export/common.js';
+import { implementDialog } from './ui/implement.js';
 import { addObject, newProject, projectFromObjects, deleteObject, findPath, sizeOf, refsTo } from './model.js';
 
 const store = new Store();
@@ -87,6 +88,7 @@ $('#top').append(
     btn(icon('open'), 'Openen: project (.vtd.json) of object pool (.iop)', openFile, 'iconbtn'),
     btn(icon('save'), 'Project opslaan als bestand (.vtd.json)', saveFile, 'iconbtn'),
     sep(),
+    btn([icon('implement'), ' Werktuig'], 'Werktuig voor de task controller (secties en dosis volgens taakkaart)', () => implementDialog(store)),
     btn([icon('export'), ' Exporteren'], 'Exporteren voor TIA Portal, CODESYS of als .iop (Ctrl+E)', () => exportDialog(store), 'primary'),
     sep(), undoBtn, redoBtn, sep(),
     btn(icon('settings'), 'Project en terminal', () => settingsDialog(store), 'iconbtn')),

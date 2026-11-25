@@ -8,6 +8,7 @@ import { listing } from '../export/listing.js';
 import { tiaIoDb, tiaIoMap } from '../export/io.js';
 import { sanitizeName, label } from '../model.js';
 import { zip, utf8 } from '../zip.js';
+import { tiaTcPool, ddopBytes, ddopListing } from '../export/tcpool.js';
 import { modal, toast } from './dialogs.js';
 
 /** The fixed PLC blocks for VT_Client, served from the same GitHub repository as this app. */
@@ -16,7 +17,7 @@ const FB_FILES = ['01_VTC_Types.udt', '02_VT_Client.scl', 'README.md'];
 const FB_GITHUB = 'https://github.com/gST84/vt-designer/tree/main/isobus_project_bundle/vt_client';
 
 const SECTIONS = [
-  { key: 'tia', label: 'TIA Portal', fields: ['tiaDb', 'ioDb', 'chunk'] },
+  { key: 'tia', label: 'TIA Portal', fields: ['tiaDb', 'ioDb', 'tcDb', 'chunk'] },
   { key: 'codesys', label: 'CODESYS', fields: ['codesysGvl', 'chunk'] },
   { key: 'general', label: 'Algemeen', fields: [] },
 ];
@@ -26,6 +27,7 @@ const tiaFiles = (p) => [
   { name: `${p.export.tiaDb}.db`, data: tiaSource(p) },
   { name: `${p.export.ioDb}.db`, data: tiaIoDb(p) },
   { name: `${p.export.ioDb}Map.scl`, data: tiaIoMap(p) },
+  ...(p.implement.enabled ? [{ name: `${p.export.tcDb}.db`, data: tiaTcPool(p) }] : []),
 ];
 const importOrder = (p) => `Importvolgorde in TIA Portal: 01_VTC_Types.udt → ${tiaFiles(p).map((f) => f.name).join(' → ')} → 02_VT_Client.scl`;
 
@@ -36,6 +38,8 @@ const TARGETS = [
     hint: 'Voor FB VT_Client. Aan VT_Client: num/str/flag/key := "<DB>".sys.num/.str/.flag/.key, ctrl := "<DB>".sys.ctrl.' },
   { key: 'iomap', section: 'tia', label: 'Koppel-FC', file: (p) => `${p.export.ioDb}Map.scl`, text: tiaIoMap,
     hint: 'Elke cyclus aanroepen, na VT_Client en vóór je eigen logica. Hoort bij de interface-DB van dezelfde export: altijd samen opnieuw importeren.' },
+  { key: 'tc', section: 'tia', label: 'TC-pool', file: (p) => `${p.export.tcDb}.db`, text: tiaTcPool, show: (p) => p.implement.enabled,
+    hint: 'De werktuigbeschrijving (DDOP) voor de task controller, met het maximum aantal secties. Voor FB TC_Client (volgt): die stuurt enkel de secties die de PLC gebruikt.' },
   { key: 'fb', section: 'tia', label: "FB's van GitHub", file: () => 'VT_Client_FB.zip',
     zip: (p, fb) => fb,
     hint: `FB VT_Client met zijn datatypes en de handleiding, uit ${FB_GITHUB} (dezelfde versie als deze designer). Opnieuw importeren na elke update van de designer.` },
@@ -50,7 +54,12 @@ const TARGETS = [
     hint: 'De binaire pool, zoals een VT ze ontvangt. Voor pool-viewers en ISOBUS-bibliotheken die een .iop-bestand inlezen.' },
   { key: 'lst', section: 'general', label: 'Listing', file: (p) => `${fileBase(p.name)}_listing.txt`, text: listing,
     hint: 'De pool byte per byte, per object.' },
+  { key: 'ddop', section: 'general', label: 'DDOP', file: (p) => `${fileBase(p.name)}_ddop.bin`, binary: true, bytes: ddopBytes, show: (p) => p.implement.enabled,
+    hint: 'De werktuigbeschrijving (ISO 11783-10) zoals de task controller ze ontvangt, met het maximum aantal secties.' },
+  { key: 'ddoplst', section: 'general', label: 'DDOP-listing', file: (p) => `${fileBase(p.name)}_ddop.txt`, text: ddopListing, show: (p) => p.implement.enabled,
+    hint: 'De werktuigbeschrijving per object, met de plaats in de bytes en bij welke sectie het hoort.' },
 ];
+const visible = (t, p) => !t.show || t.show(p);
 
 const hexDump = (b) => {
   const lines = [];
@@ -105,6 +114,7 @@ export async function exportDialog(store, initial = 'tia') {
   const fields = {
     tiaDb: nameField('Naam pool-DB', 'tiaDb'),
     ioDb: nameField('Naam interface-DB', 'ioDb'),
+    tcDb: nameField('Naam TC-pool', 'tcDb'),
     codesysGvl: nameField('Naam GVL', 'codesysGvl'),
     chunk: h('label', { class: 'field' }, h('span', null, 'Max. bytes per deel (TP)'), chunk),
   };
@@ -117,12 +127,13 @@ export async function exportDialog(store, initial = 'tia') {
       sections.append(h('button', { class: s.key === sec ? 'active' : '', onclick: () => { target = TARGETS.find((t) => t.section === s.key); refresh(); } }, s.label));
     }
     buttons.innerHTML = '';
-    for (const t of TARGETS.filter((x) => x.section === sec)) {
+    if (!visible(target, p())) target = TARGETS.find((t) => t.section === sec);
+    for (const t of TARGETS.filter((x) => x.section === sec && visible(x, p()))) {
       buttons.append(h('button', { class: t === target ? 'active' : '', onclick: () => { target = t; refresh(); } },
         h('b', null, t.label), h('small', null, t.file(p()))));
     }
     const show = SECTIONS.find((s) => s.key === sec).fields;
-    for (const [k, el] of Object.entries(fields)) el.style.display = show.includes(k) ? '' : 'none';
+    for (const [k, el] of Object.entries(fields)) el.style.display = show.includes(k) && (k !== 'tcDb' || p().implement.enabled) ? '' : 'none';
     opts.style.display = show.length ? '' : 'none';
 
     const v = validate(p());
@@ -155,8 +166,8 @@ export async function exportDialog(store, initial = 'tia') {
           area.value = `De FB's konden niet opgehaald worden (${e.message}).\nHaal ze zelf op: ${FB_GITHUB}`;
         });
       } else if (target.binary) {
-        content = pool.bytes;
-        area.value = hexDump(pool.bytes);
+        content = target.bytes ? target.bytes(p()) : pool.bytes;
+        area.value = hexDump(content);
       } else {
         content = target.text(p());
         area.value = content;
