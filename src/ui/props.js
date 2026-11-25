@@ -178,16 +178,22 @@ export class Props {
       }
       case 'bits': {
         const box = h('div', { class: 'bits' });
-        for (const [bit, txt] of f.bits) {
-          const c = h('input', { type: 'checkbox', checked: !!(v & (1 << bit)) });
+        const ver = this.s.project.settings.vtVersion;
+        for (const [bit, txt, min] of f.bits) {
+          const on = !!(v & (1 << bit));
+          const newer = min > ver; // not in the pool's VT version: can only be switched off
+          const c = h('input', { type: 'checkbox', checked: on, disabled: newer && !on ? true : null });
           c.onchange = () => this.set((x) => { x[f.n] = c.checked ? x[f.n] | (1 << bit) : x[f.n] & ~(1 << bit); }, true);
-          box.append(h('label', { class: 'check' }, c, txt));
+          box.append(h('label', { class: 'check' + (newer ? ' newer' : ''), 'data-tip': newer ? `Pas vanaf VT-versie ${min} (de pool is voor versie ${ver}).` : null }, c, txt));
         }
         return h('div', { class: 'field' }, h('span', null, f.label), box);
       }
       case 'just': {
+        const ver = this.s.project.settings.vtVersion;
         const mk = (opts, cur, apply) => {
-          const s = h('select', null, opts.map(([val, txt]) => h('option', { value: val, selected: val === cur ? true : null }, txt)));
+          const s = h('select', null, opts.map(([val, txt, min]) => h('option', {
+            value: val, selected: val === cur ? true : null, disabled: min > ver && val !== cur ? true : null,
+          }, txt)));
           s.onchange = () => this.set((x) => { x.justification = apply(x.justification, Number(s.value)); }, true);
           return s;
         };
