@@ -120,7 +120,7 @@ VERSION : 0.1
       lastUnknownId : UInt;
       commands : UDInt;   // opdrachten naar de VT gestuurd
       cmdErrors : UDInt;   // antwoorden met een foutcode
-      lastCmdFunction : Byte;   // functiecode van de laatste fout (bv. 16#A9)
+      lastCmdFunction : Byte;   // functiecode van de laatste fout (bv. 16#A8 = Change Numeric Value)
       lastCmdObject : UInt;
       lastCmdError : Byte;
       rxTpAborts : UDInt;   // ontvangst via TP afgebroken
