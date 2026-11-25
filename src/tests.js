@@ -10,6 +10,7 @@ import { tiaSource } from './export/tia.js';
 import { codesysGvl, codesysXml } from './export/codesys.js';
 import { listing } from './export/listing.js';
 import { ioPlan, tiaIoDb, tiaIoMap, inIo } from './export/io.js';
+import { zip, crc32, utf8 } from './zip.js';
 
 /** The 119 bytes of vt_test_project/VT_TestPool.iop (from pool_listing.txt). */
 const TEST_POOL = `
@@ -226,6 +227,16 @@ export function runTests(log = (s) => console.log(s)) {
   quoted.objects[11000].value = "it's $5";
   check('interface: tekst met $ en \' correct in SCL', tiaIoDb(quoted).includes("out.Hoofdtekst := 'it$'s $$5';"));
   check('normaliseren laat project ongewijzigd', JSON.stringify(normalizeProject(JSON.parse(JSON.stringify(p)))) === JSON.stringify(p));
+
+  // 11. zip for the TIA download (stored files)
+  check('CRC-32 van "hello"', crc32(utf8('hello')) === 0x3610a686);
+  const z = zip([{ name: 'a.txt', data: 'hello' }, { name: 'b.bin', data: new Uint8Array([1, 2, 3]) }], new Date(2026, 10, 25, 12, 0, 0));
+  const u32 = (i) => (z[i] | (z[i + 1] << 8) | (z[i + 2] << 16) | (z[i + 3] << 24)) >>> 0;
+  const end = z.length - 22;
+  check('zip: lokale kop, centrale map en eindrecord', u32(0) === 0x04034b50 && u32(end) === 0x06054b50 && u32(u32(end + 16)) === 0x02014b50);
+  check('zip: 2 bestanden, juiste lengte', (z[end + 10] | (z[end + 11] << 8)) === 2 && z.length === 2 * 30 + 5 + 5 + 5 + 3 + 2 * 46 + 5 + 5 + 22);
+  check('utf8: é en € juist', utf8('é€').join(',') === '195,169,226,130,172');
+  check('zip: inhoud ongewijzigd opgeslagen', String.fromCharCode(...z.slice(30 + 5, 30 + 5 + 5)) === 'hello' && u32(14) === 0x3610a686);
 
   log(fails ? `\n${fails} test(s) mislukt` : '\nAlle tests geslaagd');
   return fails;

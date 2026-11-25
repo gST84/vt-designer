@@ -206,6 +206,10 @@ td.info { color: var(--muted); }
 .form.cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .tabs.dlg { padding: 0; margin-bottom: 10px; }
 .export { display: flex; flex-direction: column; min-height: 0; }
+.exports { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.exports button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; padding: 5px 10px; }
+.exports button b { font-weight: 600; }
+.exports button small { color: var(--muted); font-size: 11px; }
 textarea.code { font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; height: 46vh; resize: vertical; white-space: pre; background: var(--panel2); }
 code.hexprev { display: block; font: 12px ui-monospace, Menlo, monospace; padding: 6px; background: var(--panel2); border-radius: 4px; word-break: break-all; }
 .tablewrap { max-height: 60vh; overflow: auto; }
