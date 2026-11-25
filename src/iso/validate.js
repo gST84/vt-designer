@@ -1,6 +1,6 @@
 // Checks a project before it goes to a terminal. Returns [{level: 'error'|'warn'|'info', id, text}].
 // Errors make the VT reject the pool (or the export unusable); warnings deserve a look.
-import { TYPES, NONE, CHILD_TYPES, typeName, newerOptions } from './schema.js';
+import { TYPES, NONE, CHILD_TYPES, typeName, newerOptions, childVersion } from './schema.js';
 import { encodeObject, forEachRef } from './codec.js';
 import { pixelsOf } from './picture.js';
 import { sizeOf, label } from '../model.js';
@@ -14,6 +14,8 @@ export function validate(p) {
   const name = (id) => label(O[id]);
   const chunkMax = p.export?.chunkMax || 1784;
   const ver = p.settings?.vtVersion ?? 3;
+  const newerChild = (child, def, need) =>
+    `${typeName(child.type)} ${name(child.id)} mag pas vanaf VT-versie ${need} in een ${def.name}. De pool is voor versie ${ver}; de terminal weigert hem.`;
 
   const ws = Object.values(O).filter((o) => o.type === 0);
   if (ws.length !== 1) err(ws[1]?.id ?? null, ws.length ? 'Een pool heeft precies één Working Set; er zijn er ' + ws.length + '.' : 'De pool heeft geen Working Set.');
@@ -43,6 +45,7 @@ export function validate(p) {
         const t = O[c.id];
         if (!t) { err(o.id, `Kind ${c.id} bestaat niet.`); continue; }
         if (!allowed.includes(t.type)) { err(o.id, `${typeName(t.type)} ${name(c.id)} mag niet in een ${def.name}.`); continue; }
+        if (childVersion(o.type, t.type) > ver) err(o.id, newerChild(t, def, childVersion(o.type, t.type)));
         const [cw, chh] = sizeOf(p, t);
         if (c.x < 0 || c.y < 0 || c.x + cw > pw || c.y + chh > ph) warn(o.id, `${name(c.id)} valt (deels) buiten ${o.name} en wordt afgeknipt.`);
       }
@@ -53,6 +56,7 @@ export function validate(p) {
           if (id === NONE && f.n === 'items') continue;
           if (!O[id]) err(o.id, `${f.label}: object ${id} bestaat niet.`);
           else if (!f.types.includes(O[id].type)) err(o.id, `${f.label}: ${name(id)} (${typeName(O[id].type)}) is hier niet toegelaten.`);
+          else if (o.type === 10 && childVersion(10, O[id].type) > ver) err(o.id, newerChild(O[id], def, childVersion(10, O[id].type)));
         }
       }
       if (f.k === 'count' && f.size === 1) {

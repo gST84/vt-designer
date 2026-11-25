@@ -9,7 +9,7 @@ import { confirmDlg, modal, toast } from './ui/dialogs.js';
 import { importPicture } from './ui/picture.js';
 import { parsePool, encodePool } from './iso/codec.js';
 import { validate } from './iso/validate.js';
-import { TYPES, CHILD_TYPES, ROOT_TYPES } from './iso/schema.js';
+import { TYPES, CHILD_TYPES, ROOT_TYPES, childVersion } from './iso/schema.js';
 import { addObject, newProject, projectFromObjects, deleteObject, findPath, sizeOf, refsTo } from './model.js';
 
 const store = new Store();
@@ -20,7 +20,8 @@ const $ = (s) => document.querySelector(s);
 function target(type) {
   const O = store.O;
   const sel = store.sel;
-  const ok = (o) => o && (CHILD_TYPES[o.type] || []).includes(type);
+  const ver = store.project.settings.vtVersion;
+  const ok = (o) => o && (CHILD_TYPES[o.type] || []).includes(type) && childVersion(o.type, type) <= ver;
   if (sel && ok(O[sel.id]) && (sel.path || sel.id === store.root)) return { parent: O[sel.id], path: sel.path || [] };
   if (sel?.path?.length) {
     const [pid] = sel.path[sel.path.length - 1];
@@ -120,7 +121,10 @@ function toolbar() {
     const tg = target(t);
     b.classList.toggle('off', !tg);
     b.setAttribute('aria-disabled', tg ? 'false' : 'true');
-    b.dataset.tip = tg ? `${label} (${TYPES[t].name}) – toevoegen aan ${tg.parent.name}` : `${label} (${TYPES[t].name}) kan niet in ${where}`;
+    const need = root && (CHILD_TYPES[root.type] || []).includes(t) ? childVersion(root.type, t) : 0;
+    b.dataset.tip = tg ? `${label} (${TYPES[t].name}) – toevoegen aan ${tg.parent.name}`
+      : need > store.project.settings.vtVersion ? `${label} (${TYPES[t].name}) kan pas vanaf VT-versie ${need} in ${where}`
+        : `${label} (${TYPES[t].name}) kan niet in ${where}`;
   }
 }
 

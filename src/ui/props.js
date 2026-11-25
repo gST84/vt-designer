@@ -1,6 +1,6 @@
 // Right panel: the attributes of the selected object, generated from its field list in the schema.
 import { h } from '../util.js';
-import { TYPES, NONE, HJUST, VJUST, EVENTS, ROOT_TYPES, CHILD_TYPES, typeName } from '../iso/schema.js';
+import { TYPES, NONE, HJUST, VJUST, EVENTS, ROOT_TYPES, CHILD_TYPES, typeName, childVersion } from '../iso/schema.js';
 import { objectsOfType, label, refsTo, addObject, uniqueName, sanitizeName, deleteObject, duplicate, sizeOf } from '../model.js';
 import { encodeObject } from '../iso/codec.js';
 import { requantize, pictureRaw } from '../iso/picture.js';
@@ -284,7 +284,7 @@ export class Props {
         h('button', { class: 'icon', title: 'Weghalen (het object blijft bestaan)', onclick: () => this.set((x) => { x.children.splice(i, 1); }, true) }, '✕')));
     });
     if (!o.children.length) list.append(h('div', { class: 'hint' }, 'Geen kinderen.'));
-    const allowed = CHILD_TYPES[o.type] || [];
+    const allowed = (CHILD_TYPES[o.type] || []).filter((t) => childVersion(o.type, t) <= p.settings.vtVersion);
     const cands = objectsOfType(p, allowed).filter((x) => x.id !== o.id);
     const add = h('select', null, h('option', { value: '' }, 'Bestaand object plaatsen…'), cands.map((x) => h('option', { value: x.id }, `${x.name} (${typeName(x.type)})`)));
     add.onchange = () => { if (add.value !== '') this.set((x) => { x.children.push({ id: Number(add.value), x: 0, y: 0 }); }, true); };
@@ -322,7 +322,7 @@ export class Props {
   idlistEditor(o, f) {
     const p = this.s.project;
     const box = h('div', { class: 'field' }, h('span', null, f.label));
-    const cands = objectsOfType(p, f.types);
+    const cands = objectsOfType(p, f.types).filter((x) => o.type !== 10 || childVersion(10, x.type) <= p.settings.vtVersion);
     o[f.n].forEach((id, i) => {
       const s = h('select', null, f.n === 'items' ? h('option', { value: NONE, selected: id === NONE ? true : null }, '— leeg —') : null,
         cands.map((x) => h('option', { value: x.id, selected: x.id === id ? true : null }, `${x.name} (${x.id})`)));

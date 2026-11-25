@@ -55,7 +55,8 @@ export function everyTypeProject() {
   const key = add(5, { keyCode: 7, children: [{ id: os.id, x: 0, y: 0 }] });
   const ptr = add(27, { value: key.id });
   const skm = add(4, { keys: [key.id, ptr.id] });
-  add(2, { softKeyMask: skm.id, priority: 0, acousticSignal: 1, children: [{ id: cont.id, x: 1, y: 2 }, { id: btn.id, x: 300, y: 400 }] });
+  add(2, { softKeyMask: skm.id, priority: 0, acousticSignal: 1, children: [{ id: on.id, x: 1, y: 2 }] });
+  p.objects[1000].children.push({ id: cont.id, x: 1, y: 2 }, { id: btn.id, x: 300, y: 400 });
   return p;
 }
 
@@ -176,6 +177,23 @@ export function runTests(log = (s) => console.log(s)) {
   check('versie 3: vet alleen is geen fout', !v4err(newProject(), 23000));
   pv.settings.vtVersion = 4;
   check('versie 4: geen versiefouten', !v4err(pv, 11001) && !v4err(pv, 23000));
+
+  // 6c. children per VT version (table A.2): a v3 terminal refused a rectangle as Input List item
+  const pc = newProject();
+  const rect = addObject(pc, 14, {});
+  const list = addObject(pc, 10, { items: [11000, rect.id] });
+  pc.objects[1000].children.push({ id: list.id, x: 0, y: 0 });
+  const meter = addObject(pc, 17, {});
+  pc.objects[0].children.push({ id: meter.id, x: 0, y: 0 });
+  check('versie 3: rechthoek in keuzelijst is een fout', v4err(pc, list.id));
+  check('versie 3: meter in werkset is een fout', v4err(pc, 0));
+  pc.objects[list.id].items = [11000, 11001];
+  check('versie 3: teksten in keuzelijst mogen', !v4err(pc, list.id));
+  pc.settings.vtVersion = 4;
+  pc.objects[list.id].items = [11000, rect.id];
+  check('versie 4: rechthoek in keuzelijst en meter in werkset mogen', !v4err(pc, list.id) && !v4err(pc, 0));
+  const am = addObject(pc, 2, { children: [{ id: list.id, x: 0, y: 0 }] });
+  check('alarmmasker zonder invoervelden', validate(pc).some((m) => m.level === 'error' && m.id === am.id && /mag niet in/.test(m.text)));
 
   // 7. pool split in TP-sized chunks of whole objects
   const big = newProject();

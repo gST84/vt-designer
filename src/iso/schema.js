@@ -70,11 +70,24 @@ export const INPUTS = [7, 8, 9, 10];
 export const CHILD_TYPES = {
   0: OUTPUTS,
   1: [...OUTPUTS, ...INPUTS, 6],
-  2: [...OUTPUTS, ...INPUTS, 6],
+  2: OUTPUTS.filter((t) => t !== 3), // an alarm mask has no containers, buttons or input fields
   3: [...OUTPUTS, ...INPUTS, 6],
   5: OUTPUTS,
   6: OUTPUTS,
 };
+
+/**
+ * Children that need a newer VT version than 2, per parent type (ISO 11783-6, table A.2):
+ * { parent: { child: version } }. Parent 10 = the list items of an Input List.
+ */
+export const CHILD_MIN_VERSION = {
+  0: { 3: 4, 17: 4, 18: 4, 19: 4, 27: 4 },
+  5: { 17: 4, 18: 4, 19: 4 },
+  6: { 17: 4, 18: 4, 19: 4 },
+  10: { 3: 4, 13: 4, 14: 4, 15: 4, 16: 4, 17: 4, 18: 4, 19: 4, 27: 4 },
+};
+/** Lowest VT version in which an object of type `child` may sit in (or be a list item of) type `parent`. */
+export const childVersion = (parent, child) => CHILD_MIN_VERSION[parent]?.[child] ?? 2;
 
 // ---------- the objects ----------
 export const TYPES = {
