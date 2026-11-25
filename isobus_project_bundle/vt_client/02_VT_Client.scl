@@ -10,7 +10,9 @@
 //
 //  Vereist: Siemens-bibliotheek LCan en 01_VTC_Types.udt.
 //  Staat los van vt_test_project (eigen namen VTC_…/typeVtc…).
-//  Versie 0.1 – 2026-11-19 – niet gecompileerd bij het schrijven.
+//  Versie 0.2 – 2026-11-25 – beantwoordt Request for Address Claimed (en NACK voor
+//  andere verzoeken aan ons), diag gewist bij elke herstart, NAME via ingangen.
+//  Versie 0.1 – 2026-11-19.
 // =====================================================================
 
 FUNCTION "VTC_Elapsed" : Time
@@ -65,7 +67,7 @@ TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io)'
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : 'Claude'
 FAMILY : ISOBUS
-VERSION : 0.1
+VERSION : 0.2
 //Elke cyclus aanroepen, gevolgd door "VT_IoMap"(). enable = TRUE start: filter zetten,
 //address claim, wachten op de VT, pool uploaden. Daarna running = TRUE en volgt het scherm "VT_Io".
    VAR_INPUT
@@ -80,6 +82,11 @@ VERSION : 0.1
       minInterval : Time := T#100MS;   // minimum tijd tussen twee opdrachten voor hetzelfde getal of dezelfde tekst
       maxPerCycle : Int := 4;   // maximum aantal opdrachten per cyclus
       echoResponses : Bool := TRUE;   // Soft Key/Button Activation en VT Change Numeric Value beantwoorden met hetzelfde bericht
+      nameIdentity : UDInt := 12345;   // NAME: identiteitsnummer (21 bit), uniek per toestel van dezelfde fabrikant
+      nameManufacturer : UInt := 0;   // NAME: fabrikantcode (11 bit); 0 toont een terminal als "Reserved"
+      nameFunction : Byte := 129;   // NAME: functie (129 = bedieningselementen, 132 = machinebesturing)
+      nameFunctionInstance : Byte := 0;   // NAME: functie-instantie (0..31)
+      nameDeviceClass : Byte := 0;   // NAME: apparaatklasse (0 = niet-specifiek, 4 = zaai/plant, 6 = spuit, ...)
    END_VAR
 
    VAR_OUTPUT
@@ -118,7 +125,12 @@ VERSION : 0.1
       txState : Int;
       q : "typeVtcTxQueue";
       ff8 : Array[0..7] of Byte := [8(16#FF)];
-      isoName : Array[0..7] of Byte := [16#39, 16#30, 16#00, 16#00, 16#00, 16#81, 16#00, 16#20];   // 64-bit ISO NAME: identiteit 12345, fabrikant 0, functie 129, industriegroep 2
+      isoName : Array[0..7] of Byte := [16#39, 16#30, 16#00, 16#00, 16#00, 16#81, 16#00, 16#20];   // 64-bit ISO NAME, bij elke (her)start uit de name…-ingangen
+      claimReq : Bool;   // Request for Address Claimed ontvangen: Address Claimed opnieuw sturen
+      nackReq : Bool;   // ander verzoek aan ons ontvangen: NACK sturen
+      nackSa : Byte;   // adres van wie het vroeg
+      nackPgn : Array[0..2] of Byte;   // gevraagde PGN
+      diagEmpty : "typeVtcDiag";   // leeg: om diag te wissen bij een herstart
       vtVersionForPool : Byte := 16#03;   // VT-versie waarvoor de pool gemaakt is
       st : Int;
       tState : Time;
@@ -198,6 +210,20 @@ BEGIN
 	    #haveMsg := FALSE;
 
 	    IF #enable AND NOT #edgeEnable THEN   // (her)start
+	        #diag := #diagEmpty;
+	        #claimReq := FALSE;
+	        #nackReq := FALSE;
+	        // NAME (ISO 11783-5): identiteit 21 bit, fabrikant 11 bit, ECU-instantie 0, functie-instantie,
+	        // functie, apparaatklasse, industriegroep 2 (landbouw), niet zelfconfigureerbaar
+	        #isoName[0] := DWORD_TO_BYTE(UDINT_TO_DWORD(#nameIdentity));
+	        #isoName[1] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#nameIdentity), N := 8));
+	        #isoName[2] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#nameIdentity), N := 16) AND 16#0000001F)
+	                       OR SHL(IN := WORD_TO_BYTE(UINT_TO_WORD(#nameManufacturer) AND 16#0007), N := 5);
+	        #isoName[3] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#nameManufacturer), N := 3));
+	        #isoName[4] := SHL(IN := #nameFunctionInstance AND 16#1F, N := 3);
+	        #isoName[5] := #nameFunction;
+	        #isoName[6] := SHL(IN := #nameDeviceClass AND 16#7F, N := 1);
+	        #isoName[7] := 16#20;
 	        #st := 1;
 	        #q.head := 0;
 	        #q.count := 0;
@@ -235,7 +261,11 @@ BEGIN
 	        // TP.DT van de VT naar ons (lange VT Change String Value)
 	        #filters[5].messageId := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
 	        #filters[6].messageId := 16#18EB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
-	        FOR #i := 0 TO 6 DO
+	        // Request (PGN 0xEA00) van de terminal aan iedereen en aan ons, en van een toestel zonder adres (0xFE)
+	        #filters[7].messageId := 16#18EAFF00 OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[8].messageId := 16#18EA0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[9].messageId := 16#18EAFFFE;
+	        FOR #i := 0 TO 9 DO
 	            #filters[#i].ignoreFilter := FALSE;
 	        END_FOR;
 	        #filterExec := TRUE;
@@ -246,7 +276,7 @@ BEGIN
 	    #setFilter(execute := #filterExec,
 	               proxyIndex := #rxProxyIndex,
 	               hwIoOfTransparentModul := #hwIdCmCan,
-	               cntOfFilter := 7,
+	               cntOfFilter := 10,
 	               filterData := #filters);
 
 	    IF #st = 2 THEN
@@ -379,6 +409,18 @@ BEGIN
 	                ELSIF #rxTpNext > #rxTpWinEnd THEN   // venster op: volgende CTS
 	                    #rxTpCts := TRUE;
 	                END_IF;
+	            END_IF;
+
+	        // ---- Request (PGN 0xEA00) aan iedereen of aan ons: gevraagde PGN in byte 0..2
+	        ELSIF #pf = 16#EA AND (#ps = 16#FF OR #ps = #myAddress) THEN
+	            IF #rxData[0] = 16#00 AND #rxData[1] = 16#EE AND #rxData[2] = 16#00 THEN
+	                #claimReq := TRUE;   // Request for Address Claimed
+	            ELSIF #ps = #myAddress THEN   // iets anders aan ons gevraagd: niet ondersteund
+	                #nackSa := #sa;
+	                #nackPgn[0] := #rxData[0];
+	                #nackPgn[1] := #rxData[1];
+	                #nackPgn[2] := #rxData[2];
+	                #nackReq := TRUE;
 	            END_IF;
 	        END_IF;
 	    END_IF;
@@ -897,6 +939,27 @@ BEGIN
 	        #d[2] := #vtVersionForPool;
 	        IF "VTC_Push"(id := #idVtCmd, data := #d, q := #q) THEN
 	            #tMaint := #now;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Verzoeken beantwoorden (ISO 11783-5 en -3)
+	    IF #st >= 11 THEN   // ons adres is geclaimd
+	        IF #claimReq THEN   // Address Claimed aan iedereen
+	            IF "VTC_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q) THEN
+	                #claimReq := FALSE;
+	            END_IF;
+	        END_IF;
+	        IF #nackReq THEN   // Acknowledgement (PGN 0xE800) aan iedereen: NACK voor de gevraagde PGN
+	            #d := #ff8;
+	            #d[0] := 16#01;
+	            #d[4] := #nackSa;
+	            #d[5] := #nackPgn[0];
+	            #d[6] := #nackPgn[1];
+	            #d[7] := #nackPgn[2];
+	            IF "VTC_Push"(id := 16#18E8FF00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q) THEN
+	                #nackReq := FALSE;
+	            END_IF;
 	        END_IF;
 	    END_IF;
 	END_REGION
