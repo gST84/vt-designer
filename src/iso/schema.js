@@ -57,7 +57,7 @@ const LINE = ref('lineAttributes', 'Lijnattributen', [24], { none: false, auto: 
 const FILL = ref('fillAttributes', 'Vulattributen', [25]);
 const NUMVAR = ref('variableReference', 'Variabele (Number Variable)', [21]);
 const STRVAR = ref('variableReference', 'Variabele (String Variable)', [22]);
-const ANGLE = (n, label, def) => u8(n, label, def, { min: 0, max: 180, hint: '× 2°, 0 = rechts, tegen de klok in' });
+const ANGLE = (n, label, def) => u8(n, label, def, { min: 0, max: 180, hint: '× 2°, 0 = rechts, 45 = boven; de boog loopt tegen de klok in van begin- naar eindhoek' });
 
 const STRING_OPTS = [[0, 'Transparant'], [1, 'Automatisch afbreken'], [2, 'Afbreken op koppelteken (v4)', 4]];
 const NUMBER_OPTS = [[0, 'Transparant'], [1, 'Voorloopnullen'], [2, 'Nul als leeg'], [3, 'Afkappen i.p.v. afronden (v4)', 4]];
@@ -181,8 +181,8 @@ export const TYPES = {
   17: {
     name: 'Output Meter', nl: 'Meter', prefix: 'Meter',
     fields: [W(100), colour('needleColour', 'Naaldkleur', 12), colour('borderColour', 'Randkleur', 0), colour('arcColour', 'Boog- en streepkleur', 0),
-      bits('options', 'Opties', [[0, 'Boog tekenen'], [1, 'Rand tekenen'], [2, 'Streepjes tekenen'], [3, 'Met de klok mee']], 15),
-      u8('ticks', 'Aantal streepjes', 6, { max: 255 }), ANGLE('startAngle', 'Beginhoek', 112), ANGLE('endAngle', 'Eindhoek', 158),
+      bits('options', 'Opties', [[0, 'Boog tekenen'], [1, 'Rand tekenen'], [2, 'Streepjes tekenen'], [3, 'Met de klok mee (wijzer start bij de eindhoek)']], 15),
+      u8('ticks', 'Aantal streepjes', 6, { max: 255 }), ANGLE('startAngle', 'Beginhoek', 158), ANGLE('endAngle', 'Eindhoek', 112),
       u16('minValue', 'Minimum', 0), u16('maxValue', 'Maximum', 100), NUMVAR, u16('value', 'Waarde', 30), ...mac, macros()],
   },
   18: {
@@ -195,8 +195,8 @@ export const TYPES = {
   19: {
     name: 'Output Arched Bar Graph', nl: 'Boogmeter', prefix: 'Arc',
     fields: [W(100), H(100), colour('colour', 'Kleur', 2), colour('targetLineColour', 'Kleur doellijn', 12),
-      bits('options', 'Opties', [[0, 'Rand'], [1, 'Doellijn'], [3, 'Enkel een lijn (niet gevuld)'], [4, 'Met de klok mee']], 16),
-      ANGLE('startAngle', 'Beginhoek', 112), ANGLE('endAngle', 'Eindhoek', 158), u16('barWidth', 'Breedte balk', 12),
+      bits('options', 'Opties', [[0, 'Rand'], [1, 'Doellijn'], [3, 'Enkel een lijn (niet gevuld)'], [4, 'Met de klok mee (start bij de eindhoek)']], 16),
+      ANGLE('startAngle', 'Beginhoek', 158), ANGLE('endAngle', 'Eindhoek', 112), u16('barWidth', 'Breedte balk', 12),
       u16('minValue', 'Minimum', 0), u16('maxValue', 'Maximum', 100), NUMVAR, u16('value', 'Waarde', 50),
       ref('targetVariableReference', 'Variabele doelwaarde', [21]), u16('targetValue', 'Doelwaarde', 0), ...mac, macros()],
   },

@@ -11,6 +11,8 @@ import { codesysGvl, codesysXml } from './export/codesys.js';
 import { listing } from './export/listing.js';
 import { ioPlan, tiaIoDb, tiaIoMap, inIo } from './export/io.js';
 import { zip, crc32, utf8 } from './zip.js';
+import { renderRoot } from './render.js';
+import { APP_VERSION, sclText } from './export/common.js';
 
 /** The 119 bytes of vt_test_project/VT_TestPool.iop (from pool_listing.txt). */
 const TEST_POOL = `
@@ -245,6 +247,34 @@ export function runTests(log = (s) => console.log(s)) {
   quoted.objects[11000].value = "it's $5";
   check('interface: tekst met $ en \' correct in SCL', tiaIoDb(quoted).includes("out.Hoofdtekst := 'it$'s $$5';"));
   check('normaliseren laat project ongewijzigd', JSON.stringify(normalizeProject(JSON.parse(JSON.stringify(p)))) === JSON.stringify(p));
+
+  // 10b. version and export time in every generated TIA block
+  const pvv = newProject("Kees' pool");
+  const vTitle = new RegExp(`^TITLE = '.* - VT Designer ${APP_VERSION.replace('.', '\\.')}, \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d'$`, 'm');
+  for (const [nm, src] of [['pool-DB', tiaSource(pvv)], ['interface-DB', tiaIoDb(pvv)], ['koppel-FC', tiaIoMap(pvv)]]) {
+    check(`${nm}: titel met designerversie en tijdstip`, vTitle.test(src), src.split('\n').find((l) => l.startsWith('TITLE')));
+    check(`${nm}: VERSION ${APP_VERSION}`, src.includes(`\nVERSION : ${APP_VERSION}\n`));
+  }
+  check("titel: ' in de projectnaam als $'", tiaSource(pvv).includes("Object pool \"Kees$' pool\""));
+  check('sclText: $ en \' ontsnapt', sclText("a$b'c") === "'a$$b$'c'");
+
+  // 10c. meter and arched bar graph: arc anticlockwise from start to end, clockwise value starts at the end angle
+  const needle = (start, end, value, options = 15) => {
+    const pm = newProject();
+    const m = addObject(pm, 17, { width: 100, startAngle: start, endAngle: end, options, value, minValue: 0, maxValue: 100 });
+    pm.objects[1000].children = [{ id: m.id, x: 0, y: 0 }];
+    const svg = renderRoot(pm, 1000).markup;
+    const g = svg.match(/<line x1="50" y1="50" x2="([-\d.e]+)" y2="([-\d.e]+)"/);
+    return g ? [Number(g[1]), Number(g[2])] : [NaN, NaN];
+  };
+  const [x0, y0] = needle(158, 112, 0), [x5, y5] = needle(158, 112, 50), [x9, y9] = needle(158, 112, 100);
+  check('meter 316°→224° met de klok mee: minimum linksonder', x0 < 50 && y0 > 50, `${x0},${y0}`);
+  check('meter 316°→224° met de klok mee: midden boven', Math.abs(x5 - 50) < 1 && y5 < 50, `${x5},${y5}`);
+  check('meter 316°→224° met de klok mee: maximum rechtsonder', x9 > 50 && y9 > 50, `${x9},${y9}`);
+  const [xb, yb] = needle(112, 158, 50);
+  check('meter 224°→316° (zoals op de terminal): wijzer onderaan', Math.abs(xb - 50) < 1 && yb > 50, `${xb},${yb}`);
+  const [xa, ya] = needle(158, 112, 0, 7);
+  check('meter tegen de klok in: minimum bij de beginhoek (rechtsonder)', xa > 50 && ya > 50, `${xa},${ya}`);
 
   // 11. zip for the TIA download (stored files)
   check('CRC-32 van "hello"', crc32(utf8('hello')) === 0x3610a686);

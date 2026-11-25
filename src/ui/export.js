@@ -60,6 +60,11 @@ const hexDump = (b) => {
   return lines.join('\n') + (b.length > 4096 ? `\n… (${b.length - 4096} bytes meer)` : '');
 };
 const size = (f) => (typeof f.data === 'string' ? utf8(f.data) : f.data).length;
+/** Version of FB VT_Client in the fetched 02_VT_Client.scl (its VERSION line), or ''. */
+const fbVersion = (fb) => {
+  const t = String.fromCharCode(...fb[1].data.slice(0, 20000));
+  return (t.match(/FUNCTION_BLOCK "VT_Client"[\s\S]*?VERSION : (\d+\.\d+)/) || [])[1] || '';
+};
 
 export async function exportDialog(store, initial = 'tia') {
   let target = TARGETS.find((t) => t.key === initial) || TARGETS[0];
@@ -142,7 +147,8 @@ export async function exportDialog(store, initial = 'tia') {
           try { files = t.zip(p(), fb); } catch (e) { area.value = 'Export mislukt: ' + e.message; return; }
           content = zip(files);
           const readme = new TextDecoder().decode(fb[2].data);
-          area.value = [t.file(p()), ...files.map((f) => `  ${f.name.padEnd(28)} ${String(size(f)).padStart(7)} bytes`), '',
+          const v = fbVersion(fb);
+          area.value = [t.file(p()), ...files.map((f) => `  ${f.name.padEnd(28)} ${String(size(f)).padStart(7)} bytes${f === fb[1] && v ? `   FB VT_Client versie ${v}` : ''}`), '',
             importOrder(p()), '', '— README.md —', '', readme].join('\n');
         }).catch((e) => {
           if (no !== loadNo) return;

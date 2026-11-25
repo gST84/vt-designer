@@ -1,7 +1,7 @@
 // CODESYS: a global variable list, as text (paste into a GVL) or as PLCopen XML
 // (Project › Import PLCopenXML).
 import { TYPES } from '../iso/schema.js';
-import { APP, buildExport, h2, plcName, stamp, summary } from './common.js';
+import { APP, APP_VERSION, buildExport, generatedBy, h2, plcName, summary } from './common.js';
 
 export function codesysGvl(p) {
   const ex = buildExport(p);
@@ -10,7 +10,7 @@ export function codesysGvl(p) {
   const n = ex.pool.chunks.length;
   const L = [
     '// =====================================================================',
-    `//  ${gvl} – object pool "${p.name}" – gegenereerd door ${APP} (${stamp()})`,
+    `//  ${gvl} – object pool "${p.name}" – ${generatedBy()}`,
     `//  ${summary(p, ex)}.`,
     `//  Application › Object toevoegen › Globale variabelenlijst "${gvl}", deze tekst als declaratie plakken.`,
     `//  Gebruik: ${gvl}.Pool, ${gvl}.POOL_SIZE, ${gvl}.ID_<naam>. Niet met de hand aanpassen: opnieuw exporteren.`,
@@ -66,7 +66,7 @@ export function codesysXml(p) {
   ];
   return `<?xml version="1.0" encoding="utf-8"?>
 <project xmlns="http://www.plcopen.org/xml/tc6_0200">
-  <fileHeader companyName="" productName="${APP}" productVersion="1" creationDateTime="${now}" />
+  <fileHeader companyName="" productName="${APP}" productVersion="${APP_VERSION}" creationDateTime="${now}" />
   <contentHeader name="${x(p.name)}" modificationDateTime="${now}">
     <coordinateInfo>
       <fbd><scaling x="1" y="1" /></fbd>

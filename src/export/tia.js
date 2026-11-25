@@ -2,7 +2,7 @@
 // Import: external source files › add › "Generate blocks from source". The fields size, chunkCount,
 // chunkStart, chunkLength and data match the inputs of FB VT_TestClient (vt_test_project).
 import { TYPES } from '../iso/schema.js';
-import { APP, buildExport, h2, plcName, stamp, summary } from './common.js';
+import { APP_VERSION, blockTitle, buildExport, generatedBy, h2, plcName, summary } from './common.js';
 
 export function tiaSource(p) {
   const ex = buildExport(p);
@@ -12,13 +12,14 @@ export function tiaSource(p) {
   const L = [];
   L.push(
     '// =====================================================================',
-    `//  ${db} – object pool "${p.name}" – gegenereerd door ${APP} (${stamp()})`,
+    `//  ${db} – object pool "${p.name}" – ${generatedBy()}`,
     `//  ${summary(p, ex)}.`,
     '//  Niet met de hand aanpassen: opnieuw exporteren.',
     '// =====================================================================',
     `DATA_BLOCK "${db}"`,
+    blockTitle(`Object pool "${p.name}", ${ex.size} bytes`),
     "{ S7_Optimized_Access := 'TRUE' }",
-    'VERSION : 0.1',
+    `VERSION : ${APP_VERSION}`,
     'NON_RETAIN',
     '   VAR ',
     '      size : UDInt;   // aantal bytes in data',

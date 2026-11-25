@@ -3,6 +3,11 @@ import { encodePool } from '../iso/codec.js';
 import { TYPES } from '../iso/schema.js';
 
 export const APP = 'PLC VT Designer';
+/**
+ * Version of the designer. It is shown in the app and written into every generated block (title,
+ * comment, VERSION), so the PLC shows which export it holds. Raise it with every change of the app.
+ */
+export const APP_VERSION = '1.1';
 
 /** IEC 61131-3 / SCL words that cannot be used as names. */
 const RESERVED = new Set(`ABS ACOS ACTION ADD AND ANY ARRAY ASIN AT ATAN BEGIN BOOL BY BYTE CASE CHAR CONST CONSTANT COS DATE DINT DIV DO DT DWORD ELSE ELSIF END_ACTION
@@ -27,4 +32,19 @@ export function summary(p, ex) {
   return `${ex.size} bytes, ${ex.named.length} objecten, ${n} ${n === 1 ? 'deel' : 'delen'} voor TP (max. ${p.export.chunkMax} bytes per Object Pool Transfer)`;
 }
 
-export const stamp = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
+/** Local date and time of the export, e.g. 2026-11-25 14:05. */
+export function stamp() {
+  const d = new Date();
+  const z = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
+}
+
+/** "gegenereerd door PLC VT Designer 1.0 (2026-11-25 14:05)" for the header comments. */
+export const generatedBy = () => `gegenereerd door ${APP} ${APP_VERSION} (${stamp()})`;
+
+/** SCL string literal: $ and ' escaped, characters outside Latin-1 as ?. */
+export const sclText = (s) => "'" + [...String(s)].map((c) => (c.charCodeAt(0) > 255 ? '?' : c)).join('').replace(/\$/g, '$$$$').replace(/'/g, "$$'") + "'";
+
+/** TITLE line of a generated block: what it is, the designer version and the export time. */
+export const blockTitle = (what) => `TITLE = ${sclText(`${what} - VT Designer ${APP_VERSION}, ${stamp()}`)}`;
+

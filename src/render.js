@@ -304,20 +304,30 @@ const valueOf = (rc, o, ref = 'variableReference', own = 'value') => {
 };
 const frac = (v, min, max) => (max > min ? Math.min(1, Math.max(0, (v - min) / (max - min))) : 0);
 
+/**
+ * Arc of a meter or arched bar graph: it always runs anticlockwise from the start to the end angle
+ * (equal angles = full circle). With clockwise deflection the value starts at the end angle and
+ * moves clockwise. This is how terminals draw it (checked on a VT 3 terminal and in
+ * AgISOVirtualTerminal): a gauge over the top with a clockwise needle has start 316°, end 224°.
+ */
+function arcSpan(o) {
+  const a0 = o.startAngle * 2;
+  const sweep = ((((o.endAngle - o.startAngle) * 2) % 360) + 360) % 360 || 360;
+  return { a0, a1: a0 + sweep, sweep };
+}
+
 function meter(rc, o, w) {
   const r = w / 2;
-  const cw = o.options & 8 ? -1 : 1;
-  const a0 = o.startAngle * 2, a1 = o.endAngle * 2;
-  let sweep = cw > 0 ? a1 - a0 : a0 - a1;
-  sweep = ((sweep % 360) + 360) % 360 || 360;
-  const ang = (t) => ((a0 + cw * sweep * t) * Math.PI) / 180;
+  const { a0, a1, sweep } = arcSpan(o);
+  const cw = o.options & 8;
+  const ang = (t) => ((cw ? a1 - sweep * t : a0 + sweep * t) * Math.PI) / 180;
   const at = (t, rr) => [r + rr * Math.cos(ang(t)), r - rr * Math.sin(ang(t))];
   let s = '';
   if (o.options & 2) s += `<circle cx="${r}" cy="${r}" r="${r - 0.5}" fill="none" stroke="${css(o.borderColour)}"/>`;
-  if (o.options & 1) s += `<polyline points="${ptsStr(arcPoints(r, r, r * 0.86, r * 0.86, a0, a1, cw))}" fill="none" stroke="${css(o.arcColour)}" stroke-width="1"/>`;
+  if (o.options & 1) s += `<polyline points="${ptsStr(arcPoints(r, r, r * 0.86, r * 0.86, a0, a1))}" fill="none" stroke="${css(o.arcColour)}" stroke-width="1"/>`;
   if (o.options & 4 && o.ticks > 0) {
     for (let i = 0; i < o.ticks; i++) {
-      const t = o.ticks === 1 ? 0 : i / (o.ticks - 1);
+      const t = o.ticks === 1 ? 0.5 : i / (o.ticks - 1);
       const [x1, y1] = at(t, r * 0.86), [x2, y2] = at(t, r * 0.72);
       s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${css(o.arcColour)}"/>`;
     }
@@ -353,16 +363,17 @@ function linearBar(rc, o, w, h) {
 
 function archedBar(rc, o, w, h) {
   const col = css(o.colour);
-  const dir = o.options & 16 ? -1 : 1;
+  const cw = o.options & 16;
   const cx = w / 2, cy = h / 2, rx = w / 2, ry = h / 2;
   const bw = Math.min(o.barWidth, rx, ry);
-  const a0 = o.startAngle * 2, a1 = o.endAngle * 2;
-  let sweep = dir > 0 ? a1 - a0 : a0 - a1;
-  sweep = ((sweep % 360) + 360) % 360 || 360;
-  const angAt = (t) => a0 + dir * sweep * t;
+  const { a0, a1, sweep } = arcSpan(o);
+  // value t (0..1) as an angle: from the start anticlockwise, or from the end clockwise
+  const angAt = (t) => (cw ? a1 - sweep * t : a0 + sweep * t);
+  // band between two values, always drawn anticlockwise from the smaller angle
   const band = (t0, t1) => {
-    const outer = arcPoints(cx, cy, rx, ry, angAt(t0), angAt(t1), dir);
-    const inner = arcPoints(cx, cy, rx - bw, ry - bw, angAt(t0), angAt(t1), dir).reverse();
+    const [from, to] = [angAt(t0), angAt(t1)].sort((x, y) => x - y);
+    const outer = arcPoints(cx, cy, rx, ry, from, to);
+    const inner = arcPoints(cx, cy, rx - bw, ry - bw, from, to).reverse();
     return ptsStr([...outer, ...inner]);
   };
   const radial = (t, c, sw = 2) => {

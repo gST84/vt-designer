@@ -10,6 +10,7 @@
 //
 //  Vereist: Siemens-bibliotheek LCan en 01_VTC_Types.udt.
 //  Staat los van vt_test_project (eigen namen VTC_…/typeVtc…).
+//  Versie 0.4 – 2026-11-25 – versie in titel, commentaar en VERSION van elk blok (te controleren in TIA).
 //  Versie 0.3 – 2026-11-25 – ontvangstfilters oplopend gesorteerd, verzoeken van nog twee
 //  toestellen (otherAddress1/2), tellers voor verzoeken en antwoorden (statisch, in de instance-DB).
 //  Versie 0.2 – 2026-11-25 – beantwoordt Request for Address Claimed (en NACK voor
@@ -18,9 +19,10 @@
 // =====================================================================
 
 FUNCTION "VTC_Elapsed" : Time
-TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip'
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - vt_client 0.4'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.1
+VERSION : 0.4
+//vt_client versie 0.4 (2026-11-25)
    VAR_INPUT
       since : Time;
       now : Time;
@@ -38,9 +40,10 @@ BEGIN
 END_FUNCTION
 
 FUNCTION "VTC_Push" : Bool
-TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol)'
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - vt_client 0.4'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.1
+VERSION : 0.4
+//vt_client versie 0.4 (2026-11-25)
    VAR_INPUT
       id : DWord;
       data : Array[0..7] of Byte;
@@ -65,11 +68,12 @@ BEGIN
 END_FUNCTION
 
 FUNCTION_BLOCK "VT_Client"
-TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io)'
+TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io) - versie 0.4'
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : 'Claude'
 FAMILY : ISOBUS
-VERSION : 0.3
+VERSION : 0.4
+//vt_client versie 0.4 (2026-11-25)
 //Elke cyclus aanroepen, gevolgd door "VT_IoMap"(). enable = TRUE start: filter zetten,
 //address claim, wachten op de VT, pool uploaden. Daarna running = TRUE en volgt het scherm "VT_Io".
    VAR_INPUT

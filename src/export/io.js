@@ -4,7 +4,7 @@
 //   - FC "VT_IoMap": copies between the named fields and those tables (SCL cannot loop over
 //     the members of a struct, so this part is generated per project).
 import { TYPES, NONE } from '../iso/schema.js';
-import { APP, plcName, stamp } from './common.js';
+import { APP_VERSION, blockTitle, generatedBy, plcName } from './common.js';
 
 const INPUTS = [7, 8, 9, 10];
 
@@ -114,14 +114,15 @@ export function tiaIoDb(p) {
   const { tables, fields } = plan;
   const L = [
     '// =====================================================================',
-    `//  ${db} – PLC-interface van object pool "${p.name}" – gegenereerd door ${APP} (${stamp()})`,
+    `//  ${db} – PLC-interface van object pool "${p.name}" – ${generatedBy()}`,
     `//  out: PLC → scherm (${fields.out.length}), in: scherm → PLC (${fields.in.length}; invoervelden kan de PLC ook schrijven).`,
     `//  sys: tabellen voor FB VT_Client – niet zelf schrijven. Elke cyclus na VT_Client "${db}Map"() aanroepen.`,
     '//  Niet met de hand aanpassen: opnieuw exporteren.',
     '// =====================================================================',
     `DATA_BLOCK "${db}"`,
+    blockTitle(`PLC-interface van "${p.name}"`),
     "{ S7_Optimized_Access := 'TRUE' }",
-    'VERSION : 0.1',
+    `VERSION : ${APP_VERSION}`,
     'NON_RETAIN',
     '   VAR ',
     '      status : Struct',
@@ -179,13 +180,14 @@ export function tiaIoMap(p) {
   const { fields } = ioPlan(p);
   const L = [
     '// =====================================================================',
-    `//  ${db}Map – koppelt ${db}.out/.in aan de tabellen van VT_Client – gegenereerd door ${APP} (${stamp()})`,
+    `//  ${db}Map – koppelt ${db}.out/.in aan de tabellen van VT_Client – ${generatedBy()}`,
     `//  Elke cyclus aanroepen, na "VT_Client_DB"(...) en vóór je eigen logica. Niet met de hand aanpassen.`,
     '// =====================================================================',
     `FUNCTION "${db}Map" : Void`,
-    `TITLE = 'Koppelt ${db}.out/.in aan de tabellen van VT_Client'`,
+    blockTitle(`Koppelt ${db} aan VT_Client`),
     "{ S7_Optimized_Access := 'TRUE' }",
-    'VERSION : 0.1',
+    `VERSION : ${APP_VERSION}`,
+    `//${p.name}: ${generatedBy()}. Hoort bij ${db} van dezelfde export.`,
     '',
     'BEGIN',
     '\tREGION Status en masker',

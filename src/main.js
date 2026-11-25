@@ -10,6 +10,7 @@ import { importPicture } from './ui/picture.js';
 import { parsePool, encodePool } from './iso/codec.js';
 import { validate } from './iso/validate.js';
 import { TYPES, CHILD_TYPES, ROOT_TYPES, childVersion } from './iso/schema.js';
+import { APP_VERSION } from './export/common.js';
 import { addObject, newProject, projectFromObjects, deleteObject, findPath, sizeOf, refsTo } from './model.js';
 
 const store = new Store();
@@ -78,7 +79,8 @@ const redoBtn = btn('↷', 'Opnieuw (Ctrl+Y)', () => store.redo());
 
 $('#top').append(
   h('div', { class: 'brand' }, h('span', { class: 'logo', html: '<svg viewBox="0 0 22 22" width="22" height="22"><rect x="1.5" y="3" width="19" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="4.5" y="6" width="9" height="8" fill="currentColor" opacity=".25"/><path d="M16 6.5h2M16 9.5h2M16 12.5h2M7 20h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' }),
-    'VT Designer', h('span', { class: 'appname' }, 'ISOBUS')),
+    'VT Designer', h('span', { class: 'appname' }, 'ISOBUS'),
+    h('span', { class: 'appver', 'data-tip': 'Versie van de designer; staat ook in de titel van elk geëxporteerd blok' }, 'v' + APP_VERSION)),
   nameEl,
   h('div', { class: 'menu' },
     btn(icon('new'), 'Nieuw project', newProj, 'iconbtn'),
