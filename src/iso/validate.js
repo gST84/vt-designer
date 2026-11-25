@@ -1,6 +1,6 @@
 // Checks a project before it goes to a terminal. Returns [{level: 'error'|'warn'|'info', id, text}].
 // Errors make the VT reject the pool (or the export unusable); warnings deserve a look.
-import { TYPES, NONE, CHILD_TYPES, typeName } from './schema.js';
+import { TYPES, NONE, CHILD_TYPES, typeName, newerOptions } from './schema.js';
 import { encodeObject, forEachRef } from './codec.js';
 import { pixelsOf } from './picture.js';
 import { sizeOf, label } from '../model.js';
@@ -13,6 +13,7 @@ export function validate(p) {
   const info = (id, text) => out.push({ level: 'info', id, text });
   const name = (id) => label(O[id]);
   const chunkMax = p.export?.chunkMax || 1784;
+  const ver = p.settings?.vtVersion ?? 3;
 
   const ws = Object.values(O).filter((o) => o.type === 0);
   if (ws.length !== 1) err(ws[1]?.id ?? null, ws.length ? 'Een pool heeft precies één Working Set; er zijn er ' + ws.length + '.' : 'De pool heeft geen Working Set.');
@@ -65,6 +66,9 @@ export function validate(p) {
         if (f.fixed && String(o[f.n]).length > o.length) warn(o.id, `${f.label} is langer dan de lengte (${o.length}) en wordt afgekapt.`);
         if ([...String(o[f.n])].some((ch) => ch.charCodeAt(0) > 255)) warn(o.id, `${f.label} bevat tekens buiten ISO 8859-1; die worden "?".`);
       }
+    }
+    for (const n of newerOptions(o, ver)) {
+      err(o.id, `${n.field}: "${n.option}" bestaat pas vanaf VT-versie ${n.min}. De pool is voor versie ${ver}; de terminal weigert hem.`);
     }
     for (const m of o.macros || []) {
       if (!O[m.macro] || O[m.macro].type !== 28) err(o.id, `Macro ${m.macro} bestaat niet.`);

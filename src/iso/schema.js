@@ -11,7 +11,8 @@ export const FONT_SIZES = [
 ];
 
 export const HJUST = [[0, 'Links'], [1, 'Midden'], [2, 'Rechts']];
-export const VJUST = [[0, 'Boven'], [1, 'Midden (v4)'], [2, 'Onder (v4)']];
+// A third element is the VT version an option needs (see newerOptions).
+export const VJUST = [[0, 'Boven'], [1, 'Midden (v4)', 4], [2, 'Onder (v4)', 4]];
 
 /** Macro events (event ID → name). */
 export const EVENTS = [
@@ -58,8 +59,8 @@ const NUMVAR = ref('variableReference', 'Variabele (Number Variable)', [21]);
 const STRVAR = ref('variableReference', 'Variabele (String Variable)', [22]);
 const ANGLE = (n, label, def) => u8(n, label, def, { min: 0, max: 180, hint: '× 2°, 0 = rechts, tegen de klok in' });
 
-const STRING_OPTS = [[0, 'Transparant'], [1, 'Automatisch afbreken'], [2, 'Afbreken op koppelteken (v4)']];
-const NUMBER_OPTS = [[0, 'Transparant'], [1, 'Voorloopnullen'], [2, 'Nul als leeg'], [3, 'Afkappen i.p.v. afronden (v4)']];
+const STRING_OPTS = [[0, 'Transparant'], [1, 'Automatisch afbreken'], [2, 'Afbreken op koppelteken (v4)', 4]];
+const NUMBER_OPTS = [[0, 'Transparant'], [1, 'Voorloopnullen'], [2, 'Nul als leeg'], [3, 'Afkappen i.p.v. afronden (v4)', 4]];
 const FORMAT = en('format', 'Notatie', [[0, 'Vast aantal decimalen'], [1, 'Exponentieel']]);
 
 // ---------- groups of types ----------
@@ -108,8 +109,8 @@ export const TYPES = {
   6: {
     name: 'Button', nl: 'Knop', prefix: 'Button',
     fields: [W(100), H(40), BG(7), colour('borderColour', 'Randkleur', 8), u8('keyCode', 'Toetscode', 1, { max: 255 }),
-      bits('options', 'Opties', [[0, 'Vergrendelbaar (latchable)'], [1, 'Ingedrukt (v4)'], [2, 'Rand onderdrukken (v4)'],
-        [3, 'Transparante achtergrond (v4)'], [4, 'Uitgeschakeld (v4)'], [5, 'Geen rand (v4)']]),
+      bits('options', 'Opties', [[0, 'Vergrendelbaar (latchable)'], [1, 'Ingedrukt (v4)', 4], [2, 'Rand onderdrukken (v4)', 4],
+        [3, 'Transparante achtergrond (v4)', 4], [4, 'Uitgeschakeld (v4)', 4], [5, 'Geen rand (v4)', 4]]),
       cnt('children'), ...mac, children(), macros()],
   },
   7: {
@@ -127,12 +128,12 @@ export const TYPES = {
     fields: [W(80), H(20), BG(), FONT, bits('options', 'Opties', NUMBER_OPTS), NUMVAR,
       u32('value', 'Waarde (ruw)'), u32('minValue', 'Minimum (ruw)'), u32('maxValue', 'Maximum (ruw)', 100), i32('offset', 'Offset'),
       f32('scale', 'Schaal', 1), u8('decimals', 'Decimalen', 0, { max: 7 }), FORMAT, just(),
-      bits('options2', 'Opties 2', [[0, 'Ingeschakeld'], [1, 'Realtime bewerken (v4)']], 1), ...mac, macros()],
+      bits('options2', 'Opties 2', [[0, 'Ingeschakeld'], [1, 'Realtime bewerken (v4)', 4]], 1), ...mac, macros()],
   },
   10: {
     name: 'Input List', nl: 'Invoer keuzelijst', prefix: 'InList',
     fields: [W(100), H(20), NUMVAR, u8('value', 'Waarde (index)', 0, { max: 255 }), cnt('items'),
-      bits('options', 'Opties', [[0, 'Ingeschakeld'], [1, 'Realtime bewerken (v4)']], 1), ...mac,
+      bits('options', 'Opties', [[0, 'Ingeschakeld'], [1, 'Realtime bewerken (v4)', 4]], 1), ...mac,
       idlist('items', 'Lijstitems', OUTPUTS), macros()],
   },
   11: {
@@ -207,7 +208,7 @@ export const TYPES = {
       en('fontType', 'Tekenset', [[0, 'ISO 8859-1 (Latin 1)'], [1, 'ISO 8859-15 (Latin 9)'], [2, 'ISO 8859-2 (Latin 2)'], [4, 'ISO 8859-4 (Latin 4)'],
         [5, 'ISO 8859-5 (Cyrillisch)'], [7, 'ISO 8859-7 (Grieks)'], [255, 'Eigen (proprietary)']]),
       bits('fontStyle', 'Stijl', [[0, 'Vet'], [1, 'Doorgestreept'], [2, 'Onderstreept'], [3, 'Cursief'], [4, 'Omgekeerd'],
-        [5, 'Knipperend omgekeerd'], [6, 'Knipperend verborgen'], [7, 'Proportioneel (v4)']]),
+        [5, 'Knipperend omgekeerd'], [6, 'Knipperend verborgen'], [7, 'Proportioneel (v4)', 4]]),
       ...mac, macros()],
   },
   24: {
@@ -241,6 +242,26 @@ export const ROOT_TYPES = [0, 1, 2, 4, 5, 3, 6];
 export const hasField = (type, n) => !!TYPES[type]?.fields.some((f) => f.n === n);
 export const typeName = (type) => TYPES[type]?.name ?? `Type ${type}`;
 export const typeNl = (type) => TYPES[type]?.nl ?? `Type ${type}`;
+
+/**
+ * Options of object `o` that need a newer VT version than `ver`, as [{ field, option, min }].
+ * A terminal of version `ver` rejects the pool on such an option (End of Object Pool error
+ * "attribute not supported"): vertical justification, for one, only exists from version 4.
+ */
+export function newerOptions(o, ver) {
+  const out = [];
+  const plain = (txt) => txt.replace(/ \(v\d\)$/, '');
+  for (const f of TYPES[o.type]?.fields || []) {
+    const v = o[f.n];
+    if (f.k === 'bits') {
+      for (const [bit, txt, min] of f.bits) if (min > ver && (v >> bit) & 1) out.push({ field: f.label, option: plain(txt), min });
+    } else if (f.k === 'just') {
+      const [, txt, min] = VJUST.find((j) => j[0] === ((v >> 2) & 3)) || [];
+      if (min > ver) out.push({ field: f.label, option: 'verticaal ' + plain(txt).toLowerCase(), min });
+    }
+  }
+  return out;
+}
 
 /** Short explanation per type (info markers in the object lists). */
 export const TYPE_INFO = {

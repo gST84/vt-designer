@@ -27,6 +27,7 @@ const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 /** A project with one object of every type, filled with non-default values. */
 export function everyTypeProject() {
   const p = newProject('Alle types');
+  p.settings.vtVersion = 4; // also covers version 4 options (vertical justification, realtime editing)
   const add = (t, a = {}) => addObject(p, t, a);
   const num = add(21, { value: 1234 });
   const sv = add(22, { value: 'abc', length: 8 });
@@ -163,6 +164,17 @@ export function runTests(log = (s) => console.log(s)) {
   deleteObject(p3, 23001);
   check('verwijderen ruimt verwijzingen op', p3.objects[11001].fontAttributes === 0xffff);
   check('validatie meldt ontbrekend lettertype', validate(p3).some((m) => m.level === 'error' && m.id === 11001));
+
+  // 6b. options of a newer VT version (a v3 terminal rejected vertical justification: EoP error 01, object 11001)
+  const pv = newProject();
+  pv.objects[11001].justification = 5; // horizontal + vertical middle
+  pv.objects[23000].fontStyle = 0x81; // bold + proportional
+  const v4err = (pp, id) => validate(pp).some((m) => m.level === 'error' && m.id === id && /VT-versie 4/.test(m.text));
+  check('versie 3: verticale uitlijning is een fout', v4err(pv, 11001));
+  check('versie 3: proportioneel lettertype is een fout', v4err(pv, 23000));
+  check('versie 3: vet alleen is geen fout', !v4err(newProject(), 23000));
+  pv.settings.vtVersion = 4;
+  check('versie 4: geen versiefouten', !v4err(pv, 11001) && !v4err(pv, 23000));
 
   // 7. pool split in TP-sized chunks of whole objects
   const big = newProject();

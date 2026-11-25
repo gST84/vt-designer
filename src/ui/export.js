@@ -125,7 +125,7 @@ export async function settingsDialog(store) {
       h('h3', null, 'Terminal (uit Get Hardware / Get Soft Key Info)'),
       h('div', { class: 'grid2' },
         num('dmSize', 'Datamasker (px, vierkant)', 60, 2000, 'bv. 480 of 200'),
-        h('label', { class: 'field' }, h('span', null, 'Versie'), ver),
+        h('label', { class: 'field' }, h('span', null, 'Versie'), ver, h('small', null, 'Zoals diag.vtVersion van VT_Client')),
         num('skWidth', 'Softkey breedte (px)', 10, 400), num('skHeight', 'Softkey hoogte (px)', 10, 400),
         num('skCount', 'Softkeys per pagina', 1, 64), num('grid', 'Raster (px, 1 = uit)', 1, 100))),
     buttons: [{ label: 'Annuleren', value: false }, { label: 'OK', value: true, primary: true }],
