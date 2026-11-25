@@ -1,6 +1,7 @@
 // =====================================================================
 //  VT_Client – PLC-datatypes. Eerst importeren.
 //  Eigen namen (typeVtc…), zodat dit naast vt_test_project in hetzelfde project kan staan.
+//  Versie 0.2 – 2026-11-25 – typeVtcDiag: vtUsed, vtDiscovered, devicesSeen, requestsFrom.
 //  Versie 0.1 – 2026-11-19
 // =====================================================================
 
@@ -98,7 +99,7 @@ VERSION : 0.1
 END_TYPE
 
 TYPE "typeVtcDiag"
-VERSION : 0.1
+VERSION : 0.2
    STRUCT
       stateText : String[40];   // leesbare toestand
       vtSeen : Bool;   // VT Status ontvangen
@@ -129,6 +130,10 @@ VERSION : 0.1
       sendStatus : Word;
       rxFrames : UDInt;
       txFrames : UDInt;
+      vtUsed : Byte;   // gebruikt VT-adres
+      vtDiscovered : Bool;   // zelf gevonden (vtAddress = 16#FF)
+      devicesSeen : USInt;   // toestellen die op de vraag naar hun adresclaim antwoordden
+      requestsFrom : Array[0..2] of Byte;   // adressen waarvan verzoeken beantwoord worden (16#FF = vrij)
    END_STRUCT;
 
 END_TYPE

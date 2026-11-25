@@ -1,6 +1,7 @@
 // =====================================================================
 //  TC_Client – PLC-datatypes. Eerst importeren.
 //  Eigen namen (typeTcc…/typeTc…): los van vt_client, beide kunnen samen in een project.
+//  Versie 0.2 – 2026-11-25 – typeTccDiag: tcUsed, tcDiscovered, devicesSeen.
 //  Versie 0.1 – 2026-11-25
 // =====================================================================
 
@@ -68,7 +69,7 @@ VERSION : 0.1
 END_TYPE
 
 TYPE "typeTccDiag"
-VERSION : 0.1
+VERSION : 0.2
    STRUCT
       stateText : String[40];   // leesbare toestand
       tcSeen : Bool;   // statusbericht van de TC ontvangen
@@ -98,6 +99,9 @@ VERSION : 0.1
       sendStatus : Word;
       rxFrames : UDInt;
       txFrames : UDInt;
+      tcUsed : Byte;   // gebruikt TC-adres
+      tcDiscovered : Bool;   // zelf gevonden (tcAddress = 16#FF)
+      devicesSeen : USInt;   // toestellen die op de vraag naar hun adresclaim antwoordden
    END_STRUCT;
 
 END_TYPE

@@ -20,7 +20,8 @@ In de CM CAN (CAN transparent) naast die van `VT_Client`:
    `VT_Client` mogen geen proxy delen: elk blok schrijft elke cyclus zijn proxy-uitgangen.
 2. Tags op de beginadressen, met de types `LCan_typeRcvIn/OutTransparentMessage` en
    `LCan_typeSendIn/OutTransparentMessage`.
-3. Zet bij `VT_Client` `otherAddress2 := 16#F7` (adres van de TC), zodat ook verzoeken van de TC beantwoord worden.
+3. `VT_Client` (vanaf 0.5, `vtAddress := 16#FF`) beantwoordt zelf de verzoeken van alle functies van de terminal, ook
+   van de TC. Met een vast `vtAddress`: zet `otherAddress2 := 16#F7` (adres van de TC).
 
 De CM CAN nam op de testbank een gewijzigde filterlijst pas over na een spanningsonderbreking. Komt een TC-bericht
 nooit binnen (`diag.rxFrames` blijft 0 terwijl de TC er is): station even spanningsloos maken.
@@ -35,7 +36,7 @@ Na een wijziging van het werktuig in de designer: de drie geëxporteerde bestand
 ```
 "TC_Client_DB"(enable       := "VT_Client_DB".running,   // adres geclaimd door VT_Client
                myAddress    := 16#90,
-               tcAddress    := 16#F7,
+               tcAddress    := 16#FF,                    // zelf zoeken (functie 130), of vast bv. 16#F7
                canStatus    := "PLC_1.CM CAN_1.CAN transparent.Status",
                hwIdCmCan    := <systeemconstante CM CAN>,
                rxProxyIndex := 4,
@@ -72,15 +73,17 @@ Gebruik dezelfde NAME-ingangen als bij `VT_Client` (standaard zijn ze gelijk).
 
 ## Wat er gebeurt
 
-1. Wacht `startupDelay` (6 s) en op het statusbericht van de TC, stuurt Working Set Master en elke 2 s zijn status.
-2. Wisselt versies uit (wij: versie 3, documentatie + TC-GEO + sectiebesturing, 1 boom, n secties).
-3. Maakt de beschrijving klaar met `par.sectionCount` secties en de maten uit `par` (Y uit de breedtes als
+1. Met `tcAddress = 16#FF`: vraagt iedereen om zijn adresclaim, kiest de TC (functie 130, instantie 0 eerst; anders
+   de bron van een TC-statusbericht; anders 16#F7) en zet dan pas zijn filters.
+2. Wacht `startupDelay` (6 s) en op het statusbericht van de TC, stuurt Working Set Master en elke 2 s zijn status.
+3. Wisselt versies uit (wij: versie 3, documentatie + TC-GEO + sectiebesturing, 1 boom, n secties).
+4. Maakt de beschrijving klaar met `par.sectionCount` secties en de maten uit `par` (Y uit de breedtes als
    `autoLayout`), de NAME en een structuurlabel dat met de secties en maten verandert.
-4. Vraagt het structuur- en taallabel dat de TC van ons heeft. Kent de TC deze beschrijving al, dan meteen activeren;
+5. Vraagt het structuur- en taallabel dat de TC van ons heeft. Kent de TC deze beschrijving al, dan meteen activeren;
    anders oude wissen, overdracht aanvragen en sturen (TP tot 1785 bytes, ETP daarboven), en activeren.
-5. Verbonden: zet waarden die de TC stuurt in `in`/`io`, antwoordt op vragen, stuurt waarden volgens de
+6. Verbonden: zet waarden die de TC stuurt in `in`/`io`, antwoordt op vragen, stuurt waarden volgens de
    meetopdrachten van de TC (tijdsinterval, bij verandering) en alle standaardwaarden op vraag.
-6. Valt het statusbericht van de TC 6 s weg, of stuurt de TC een NACK: opnieuw aanmelden.
+7. Valt het statusbericht van de TC 6 s weg, of stuurt de TC een NACK: opnieuw aanmelden.
 
 Nieuwe waarden in `par`: `enable` uit en weer aan.
 

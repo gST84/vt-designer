@@ -10,6 +10,8 @@
 //
 //  Vereist: Siemens-bibliotheek LCan en 01_VTC_Types.udt.
 //  Staat los van vt_test_project (eigen namen VTC_…/typeVtc…).
+//  Versie 0.5 – 2026-11-25 – vtAddress = 16#FF: VT zelf zoeken (adresclaims, functie 29); verzoeken van de
+//  andere functies van dezelfde terminal automatisch beantwoorden (otherAddress = 16#FF).
 //  Versie 0.4 – 2026-11-25 – versie in titel, commentaar en VERSION van elk blok (te controleren in TIA).
 //  Versie 0.3 – 2026-11-25 – ontvangstfilters oplopend gesorteerd, verzoeken van nog twee
 //  toestellen (otherAddress1/2), tellers voor verzoeken en antwoorden (statisch, in de instance-DB).
@@ -19,10 +21,10 @@
 // =====================================================================
 
 FUNCTION "VTC_Elapsed" : Time
-TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - vt_client 0.4'
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - vt_client 0.5'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.4
-//vt_client versie 0.4 (2026-11-25)
+VERSION : 0.5
+//vt_client versie 0.5 (2026-11-25)
    VAR_INPUT
       since : Time;
       now : Time;
@@ -40,10 +42,10 @@ BEGIN
 END_FUNCTION
 
 FUNCTION "VTC_Push" : Bool
-TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - vt_client 0.4'
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - vt_client 0.5'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.4
-//vt_client versie 0.4 (2026-11-25)
+VERSION : 0.5
+//vt_client versie 0.5 (2026-11-25)
    VAR_INPUT
       id : DWord;
       data : Array[0..7] of Byte;
@@ -68,18 +70,18 @@ BEGIN
 END_FUNCTION
 
 FUNCTION_BLOCK "VT_Client"
-TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io) - versie 0.4'
+TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io) - versie 0.5'
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : 'Claude'
 FAMILY : ISOBUS
-VERSION : 0.4
-//vt_client versie 0.4 (2026-11-25)
+VERSION : 0.5
+//vt_client versie 0.5 (2026-11-25)
 //Elke cyclus aanroepen, gevolgd door "VT_IoMap"(). enable = TRUE start: filter zetten,
 //address claim, wachten op de VT, pool uploaden. Daarna running = TRUE en volgt het scherm "VT_Io".
    VAR_INPUT
       enable : Bool;   // TRUE = werkset actief, positieve flank = (her)start
       myAddress : Byte := 16#90;   // ons bronadres (moet vrij zijn op de bus)
-      vtAddress : Byte := 16#80;   // adres van de terminal
+      vtAddress : Byte := 16#FF;   // adres van de VT; 16#FF = zelf zoeken (functie 29, anders 16#26)
       canStatus : Byte;   // statusbyte van de CM CAN
       hwIdCmCan : HW_IO;   // hardware-ID van de CM CAN (systeemconstante)
       rxProxyIndex : Byte := 2;   // nummer van de receive proxy voor VT-verkeer
@@ -93,8 +95,8 @@ VERSION : 0.4
       nameFunction : Byte := 129;   // NAME: functie (129 = bedieningselementen, 132 = machinebesturing)
       nameFunctionInstance : Byte := 0;   // NAME: functie-instantie (0..31)
       nameDeviceClass : Byte := 0;   // NAME: apparaatklasse (0 = niet-specifiek, 4 = zaai/plant, 6 = spuit, ...)
-      otherAddress1 : Byte := 16#FF;   // nog een toestel dat ons verzoeken stuurt (bv. 16#2B), 16#FF = geen
-      otherAddress2 : Byte := 16#FF;   // idem (bv. 16#F7, de taakcontroller van de terminal)
+      otherAddress1 : Byte := 16#FF;   // nog een toestel dat ons verzoeken stuurt (bv. 16#2B); 16#FF = automatisch bij het zoeken
+      otherAddress2 : Byte := 16#FF;   // idem (bv. 16#F7); bij het zoeken: de andere functies van dezelfde terminal
    END_VAR
 
    VAR_OUTPUT
@@ -146,6 +148,17 @@ VERSION : 0.4
       rqLastPgn : DWord;   // gevraagde PGN in het laatste verzoek
       claimsSent : UDInt;   // Address Claimed op verzoek gestuurd
       nacksSent : UDInt;   // NACK gestuurd
+      vtUse : Byte;   // gebruikt VT-adres (vtAddress of gevonden)
+      extra : Array[0..2] of Byte;   // adressen waarvan we verzoeken beantwoorden (16#FF = vrij)
+      claimSa : Array[0..15] of Byte;   // adresclaims gezien tijdens het zoeken
+      claimFn : Array[0..15] of Byte;   // functie uit de NAME
+      claimInst : Array[0..15] of Byte;   // functie-instantie
+      claimId : Array[0..15] of DWord;   // identiteit + fabrikant (bytes 0-3 van de NAME)
+      nClaims : Int;
+      statusSa : Byte;   // bron van een VT Status tijdens het zoeken
+      tries : Int;
+      rcvAll : Bool;   // tijdens het zoeken: alles ontvangen
+      rcvOn : Bool;
       vtVersionForPool : Byte := 16#03;   // VT-versie waarvoor de pool gemaakt is
       st : Int;
       tState : Time;
@@ -213,15 +226,17 @@ VERSION : 0.4
       found : Bool;
       haveMsg : Bool;
       chars : Array[0..253] of Char;
+      m : Int;
+      placed : Bool;
    END_VAR
 
 
 BEGIN
 	REGION Voorbereiding
 	    #now := TIME_TCK();
-	    #idVtCmd := 16#1CE70000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
-	    #idTpCm := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
-	    #idTpDt := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#vtAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idVtCmd := 16#1CE70000 OR SHL(IN := BYTE_TO_DWORD(#vtUse), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idTpCm := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#vtUse), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idTpDt := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#vtUse), N := 8) OR BYTE_TO_DWORD(#myAddress);
 	    #haveMsg := FALSE;
 
 	    IF #enable AND NOT #edgeEnable THEN   // (her)start
@@ -242,7 +257,19 @@ BEGIN
 	        #isoName[5] := #nameFunction;
 	        #isoName[6] := SHL(IN := #nameDeviceClass AND 16#7F, N := 1);
 	        #isoName[7] := 16#20;
-	        #st := 1;
+	        #nClaims := 0;
+	        #statusSa := 16#FF;
+	        #tries := 0;
+	        #extra[0] := #otherAddress1;
+	        #extra[1] := #otherAddress2;
+	        #extra[2] := 16#FF;
+	        IF #vtAddress = 16#FF THEN   // zelf zoeken
+	            #vtUse := 16#FF;
+	            #st := 3;
+	        ELSE
+	            #vtUse := #vtAddress;
+	            #st := 1;
+	        END_IF;
 	        #q.head := 0;
 	        #q.count := 0;
 	        #tpState := 0;
@@ -269,32 +296,29 @@ BEGIN
 	            #filters[#i].messageId := 16#0;
 	        END_FOR;
 	        // VT Status van de terminal aan iedereen
-	        #filters[0].messageId := 16#1CE6FF00 OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[0].messageId := 16#1CE6FF00 OR BYTE_TO_DWORD(#vtUse);
 	        // VT → ons (prioriteit 7 en 6)
-	        #filters[1].messageId := 16#1CE60000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
-	        #filters[2].messageId := 16#18E60000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[1].messageId := 16#1CE60000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtUse);
+	        #filters[2].messageId := 16#18E60000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtUse);
 	        // TP.CM van de VT naar ons (CTS, EoMA, abort, RTS)
-	        #filters[3].messageId := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
-	        #filters[4].messageId := 16#18EC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[3].messageId := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtUse);
+	        #filters[4].messageId := 16#18EC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtUse);
 	        // TP.DT van de VT naar ons (lange VT Change String Value)
-	        #filters[5].messageId := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
-	        #filters[6].messageId := 16#18EB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[5].messageId := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtUse);
+	        #filters[6].messageId := 16#18EB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtUse);
 	        // Request (PGN 0xEA00) van de terminal aan iedereen en aan ons, en van een toestel zonder adres (0xFE)
-	        #filters[7].messageId := 16#18EAFF00 OR BYTE_TO_DWORD(#vtAddress);
-	        #filters[8].messageId := 16#18EA0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtAddress);
+	        #filters[7].messageId := 16#18EAFF00 OR BYTE_TO_DWORD(#vtUse);
+	        #filters[8].messageId := 16#18EA0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#vtUse);
 	        #filters[9].messageId := 16#18EAFFFE;
 	        #k := 10;
-	        // verzoeken van nog twee toestellen, aan iedereen en aan ons
-	        IF #otherAddress1 <> 16#FF THEN
-	            #filters[#k].messageId := 16#18EAFF00 OR BYTE_TO_DWORD(#otherAddress1);
-	            #filters[#k + 1].messageId := 16#18EA0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#otherAddress1);
-	            #k := #k + 2;
-	        END_IF;
-	        IF #otherAddress2 <> 16#FF THEN
-	            #filters[#k].messageId := 16#18EAFF00 OR BYTE_TO_DWORD(#otherAddress2);
-	            #filters[#k + 1].messageId := 16#18EA0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#otherAddress2);
-	            #k := #k + 2;
-	        END_IF;
+	        // verzoeken van tot 3 andere toestellen (otherAddress1/2 of gevonden), aan iedereen en aan ons
+	        FOR #m := 0 TO 2 DO
+	            IF #extra[#m] <> 16#FF AND #extra[#m] <> #vtUse THEN
+	                #filters[#k].messageId := 16#18EAFF00 OR BYTE_TO_DWORD(#extra[#m]);
+	                #filters[#k + 1].messageId := 16#18EA0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#extra[#m]);
+	                #k := #k + 2;
+	            END_IF;
+	        END_FOR;
 	        // oplopend sorteren: zo hangt de werking niet af van hoe de module de lijst doorzoekt
 	        FOR #i := 1 TO #k - 1 DO
 	            FOR #j := #i TO 1 BY -1 DO
@@ -335,10 +359,13 @@ BEGIN
 	END_REGION
 
 	REGION Ontvangen (één frame per cyclus)
-	    #rcv(enable := #st >= 10,
+	    // tijdens het zoeken (toestand 3-5) alles ontvangen; in 1-2 uit, zodat de FB opnieuw start met filters
+	    #rcvAll := #st >= 3 AND #st <= 5;
+	    #rcvOn := #st >= 10 OR #rcvAll;
+	    #rcv(enable := #rcvOn,
 	         canModulStatusByte := #canStatus,
 	         deviceType := FALSE,
-	         ignoreRcvFilterSetting := FALSE,
+	         ignoreRcvFilterSetting := #rcvAll,
 	         resetRcvMsgBuffer := FALSE,
 	         ackMessage := #rxAck,
 	         inputArea := #rxProxyIn,
@@ -354,8 +381,30 @@ BEGIN
 	        #ps := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 8));
 	        #sa := DWORD_TO_BYTE(#rcv.messageId);
 
+	        // ---- zoeken: adresclaims en VT Status van iedereen bijhouden
+	        IF #rcvAll THEN
+	            IF #pf = 16#EE AND #ps = 16#FF AND #nClaims < 16 THEN
+	                #found := FALSE;
+	                FOR #m := 0 TO #nClaims - 1 DO
+	                    IF #claimSa[#m] = #sa THEN
+	                        #found := TRUE;
+	                    END_IF;
+	                END_FOR;
+	                IF NOT #found THEN
+	                    #claimSa[#nClaims] := #sa;
+	                    #claimFn[#nClaims] := #rxData[5];
+	                    #claimInst[#nClaims] := SHR(IN := #rxData[4], N := 3);
+	                    #claimId[#nClaims] := SHL(IN := BYTE_TO_DWORD(#rxData[3]), N := 24) OR SHL(IN := BYTE_TO_DWORD(#rxData[2]), N := 16)
+	                                          OR SHL(IN := BYTE_TO_DWORD(#rxData[1]), N := 8) OR BYTE_TO_DWORD(#rxData[0]);
+	                    #nClaims := #nClaims + 1;
+	                END_IF;
+	            ELSIF #pf = 16#E6 AND #ps = 16#FF AND #rxData[0] = 16#FE THEN
+	                #statusSa := #sa;
+	            END_IF;
+	        END_IF;
+
 	        // ---- VT → ECU (PGN 0xE600), één frame
-	        IF #pf = 16#E6 AND #sa = #vtAddress THEN
+	        IF #pf = 16#E6 AND #sa = #vtUse THEN
 	            IF #rxData[0] = 16#FE THEN   // VT Status (elke seconde)
 	                #diag.vtSeen := TRUE;
 	                #diag.onScreen := #rxData[1] = #myAddress;
@@ -370,7 +419,7 @@ BEGIN
 	            END_IF;
 
 	        // ---- TP.CM van de VT naar ons
-	        ELSIF #pf = 16#EC AND #ps = #myAddress AND #sa = #vtAddress THEN
+	        ELSIF #pf = 16#EC AND #ps = #myAddress AND #sa = #vtUse THEN
 	            IF #rxData[5] = 16#00 AND #rxData[6] = 16#E7 AND #rxData[7] = 16#00 THEN
 	                // over ons bericht naar de VT
 	                IF #rxData[0] = 16#11 AND (#tpState = 2 OR #tpState = 3) THEN   // CTS
@@ -422,7 +471,7 @@ BEGIN
 	            END_IF;
 
 	        // ---- TP.DT van de VT naar ons
-	        ELSIF #pf = 16#EB AND #ps = #myAddress AND #sa = #vtAddress AND #rxTpState = 1 THEN
+	        ELSIF #pf = 16#EB AND #ps = #myAddress AND #sa = #vtUse AND #rxTpState = 1 THEN
 	            #n := BYTE_TO_INT(#rxData[0]);
 	            IF #n = #rxTpNext THEN
 	                FOR #k := 0 TO 6 DO
@@ -639,6 +688,67 @@ BEGIN
 
 	REGION Toestandsmachine
 	    CASE #st OF
+	        3:  // VT zoeken: eerst ons adres claimen
+	            #ok := "VTC_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q);
+	            #tState := #now;
+	            #st := 4;
+
+	        4:  // na 300 ms iedereen om zijn adresclaim vragen (Request, PGN 0xEE00)
+	            IF "VTC_Elapsed"(since := #tState, now := #now) >= T#300MS THEN
+	                #d := #ff8;
+	                #d[0] := 16#00;
+	                #d[1] := 16#EE;
+	                #d[2] := 16#00;
+	                IF "VTC_Push"(id := 16#18EAFF00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q) THEN
+	                    #tries := #tries + 1;
+	                    #tState := #now;
+	                    #st := 5;
+	                END_IF;
+	            END_IF;
+
+	        5:  // 1 s antwoorden verzamelen; VT = functie 29, instantie 0 heeft voorrang
+	            IF "VTC_Elapsed"(since := #tState, now := #now) >= T#1S THEN
+	                #k := -1;
+	                FOR #m := 0 TO #nClaims - 1 DO
+	                    IF #claimFn[#m] = 16#1D AND #claimInst[#m] = 16#00 AND #k < 0 THEN
+	                        #k := #m;
+	                    END_IF;
+	                END_FOR;
+	                FOR #m := 0 TO #nClaims - 1 DO
+	                    IF #claimFn[#m] = 16#1D AND #k < 0 THEN
+	                        #k := #m;
+	                    END_IF;
+	                END_FOR;
+	                IF #k >= 0 THEN
+	                    #vtUse := #claimSa[#k];
+	                    // andere functies van dezelfde terminal (zelfde identiteit en fabrikant): hun verzoeken beantwoorden
+	                    FOR #m := 0 TO #nClaims - 1 DO
+	                        IF #m <> #k AND #claimId[#m] = #claimId[#k] AND #claimSa[#m] <> #extra[0] AND #claimSa[#m] <> #extra[1] AND #claimSa[#m] <> #extra[2] THEN
+	                            #placed := FALSE;
+	                            FOR #i := 0 TO 2 DO
+	                                IF #extra[#i] = 16#FF AND NOT #placed THEN
+	                                    #extra[#i] := #claimSa[#m];
+	                                    #placed := TRUE;
+	                                END_IF;
+	                            END_FOR;
+	                        END_IF;
+	                    END_FOR;
+	                ELSIF #statusSa <> 16#FF THEN
+	                    #vtUse := #statusSa;
+	                END_IF;
+	                #diag.devicesSeen := INT_TO_USINT(#nClaims);
+	                IF #vtUse <> 16#FF THEN
+	                    #diag.vtDiscovered := TRUE;
+	                    #st := 1;
+	                ELSIF #tries < 3 THEN
+	                    #tState := #now;
+	                    #st := 4;
+	                ELSE
+	                    #vtUse := 16#26;   // niets gevonden: voorkeursadres van een VT
+	                    #st := 1;
+	                END_IF;
+	            END_IF;
+
 	        10:  // Address Claim: onze NAME op PGN 0xEE00 aan iedereen
 	            #ok := "VTC_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q);
 	            #tState := #now;
@@ -1054,6 +1164,8 @@ BEGIN
 	END_REGION
 
 	REGION Uitgangen
+	    #diag.vtUsed := #vtUse;
+	    #diag.requestsFrom := #extra;
 	    #state := #st;
 	    #running := #st = 70;
 	    #error := #st >= 900;
@@ -1063,6 +1175,7 @@ BEGIN
 	    CASE #st OF
 	        0: #diag.stateText := 'uit';
 	        1, 2: #diag.stateText := 'filter instellen';
+	        3, 4, 5: #diag.stateText := 'VT zoeken';
 	        10, 11: #diag.stateText := 'address claim';
 	        20: #diag.stateText := 'wacht op VT Status';
 	        30, 40: #diag.stateText := 'Get Memory';
