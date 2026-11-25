@@ -1,0 +1,1145 @@
+// =====================================================================
+//  TC_Client: S7-1500 + ET 200SP CM CAN als task controller-client (ISO 11783-10).
+//  Meldt het werktuig aan bij de task controller (TC) van de terminal, stuurt de
+//  werktuigbeschrijving (DDOP uit de VT Designer, TC_Pool) met het aantal secties
+//  dat de PLC gebruikt, en wisselt daarna procesdata uit via de tabel TC_Io.sys.pd:
+//    - van de TC: werkstand, secties aan/uit (TC-SC), instelwaarden zoals dosis,
+//      diepte of hoogte (TC-GEO), meetopdrachten (tijd, verandering);
+//    - naar de TC: werkelijke waarden op vraag en volgens de meetopdrachten.
+//  Werkt naast VT_Client met hetzelfde adres en dezelfde NAME; VT_Client claimt
+//  het adres. Eigen receive proxy en eigen transmit proxy.
+//
+//  Vereist: Siemens-bibliotheek LCan en 01_TCC_Types.udt.
+//  Versie 0.1 – 2026-11-25 – eerste versie; niet gecompileerd bij het schrijven.
+// =====================================================================
+
+FUNCTION "TCC_Elapsed" : Time
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - tc_client 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tc_client versie 0.1 (2026-11-25)
+   VAR_INPUT
+      since : Time;
+      now : Time;
+   END_VAR
+   VAR_TEMP
+      t : Time;
+   END_VAR
+
+BEGIN
+	#t := #now - #since;
+	IF #t < T#0MS THEN   // TIME_TCK is teruggesprongen naar 0
+	    #t := #t + T#24D_20H_31M_23S_647MS;
+	END_IF;
+	#TCC_Elapsed := #t;
+END_FUNCTION
+
+FUNCTION "TCC_Push" : Bool
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - tc_client 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tc_client versie 0.1 (2026-11-25)
+   VAR_INPUT
+      id : DWord;
+      data : Array[0..7] of Byte;
+   END_VAR
+   VAR_IN_OUT
+      q : "typeTccTxQueue";
+   END_VAR
+   VAR_TEMP
+      idx : Int;
+   END_VAR
+
+BEGIN
+	IF #q.count >= 64 THEN
+	    #TCC_Push := FALSE;
+	ELSE
+	    #idx := (#q.head + #q.count) MOD 64;
+	    #q.frame[#idx].id := #id;
+	    #q.frame[#idx].data := #data;
+	    #q.count := #q.count + 1;
+	    #TCC_Push := TRUE;
+	END_IF;
+END_FUNCTION
+
+FUNCTION_BLOCK "TC_Client"
+TITLE = 'ISOBUS task controller-client (ISO 11783-10) - versie 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Claude'
+FAMILY : ISOBUS
+VERSION : 0.1
+//tc_client versie 0.1 (2026-11-25)
+//Elke cyclus aanroepen, gevolgd door "TC_IoMap"(). enable aanzetten zodra VT_Client het adres
+//geclaimd heeft (VT_Client.running). Na een wijziging van TC_Io.par: enable uit en weer aan.
+   VAR_INPUT
+      enable : Bool;   // TRUE = verbinden met de TC, positieve flank = (her)start
+      myAddress : Byte := 16#90;   // ons bronadres (zelfde als VT_Client)
+      tcAddress : Byte := 16#F7;   // adres van de task controller
+      canStatus : Byte;   // statusbyte van de CM CAN
+      hwIdCmCan : HW_IO;   // hardware-ID van de CM CAN (systeemconstante)
+      rxProxyIndex : Byte := 4;   // nummer van de receive proxy voor TC-verkeer (niet die van VT_Client)
+      startupDelay : Time := T#6S;   // wachttijd na de start (ISO 11783-10)
+      info : "typeTcPoolInfo";   // "TC_Pool".info
+      sectionCount : USInt;   // "TC_Io".par.sectionCount (0 = maximum)
+      autoLayout : Bool := TRUE;   // "TC_Io".par.autoLayout: Y van de secties uit de breedtes
+      nameIdentity : UDInt := 12345;   // NAME: zelfde waarden als bij VT_Client
+      nameManufacturer : UInt := 0;
+      nameFunction : Byte := 129;
+      nameFunctionInstance : Byte := 0;
+      nameDeviceClass : Byte := 0;
+   END_VAR
+
+   VAR_OUTPUT
+      connected : Bool;   // beschrijving geactiveerd, procesdata lopen
+      error : Bool;   // gestopt met fout: zie diag
+      state : Int;
+      diag : "typeTccDiag";
+   END_VAR
+
+   VAR_IN_OUT
+      pool : Array[*] of Byte;   // "TC_Pool".data
+      objStart : Array[*] of UDInt;   // "TC_Pool".objStart
+      objLength : Array[*] of UInt;   // "TC_Pool".objLength
+      objSection : Array[*] of USInt;   // "TC_Pool".objSection
+      patchOffset : Array[*] of UDInt;   // "TC_Pool".patchOffset
+      patchKind : Array[*] of USInt;   // "TC_Pool".patchKind
+      patchSection : Array[*] of USInt;   // "TC_Pool".patchSection
+      sectionWidth : Array[*] of DInt;   // "TC_Io".par.sectionWidth (mm)
+      sectionX : Array[*] of DInt;   // "TC_Io".par.sectionX (mm)
+      sectionY : Array[*] of DInt;   // "TC_Io".par.sectionY (mm)
+      pd : Array[*] of "typeTcPd";   // "TC_Io".sys.pd
+      ctrl : "typeTcCtrl";   // "TC_Io".sys.ctrl
+      rxProxyIn : "LCan_typeRcvInTransparentMessage";
+      rxProxyOut : "LCan_typeRcvOutTransparentMessage";
+      txProxyIn : "LCan_typeSendInTransparentMessage";
+      txProxyOut : "LCan_typeSendOutTransparentMessage";
+   END_VAR
+
+   VAR
+      setFilter : "LCan_SetTransparentFilter";
+      rcv : "LCan_RcvTransparentMessage";
+      snd : "LCan_SendTransparentMessage";
+      filters : Array[0..15] of "LCan_typeTransparentFilter";
+      fTmp : "LCan_typeTransparentFilter";
+      filterExec : Bool;
+      nFilters : USInt;
+      rxData : Array[0..7] of Byte;
+      rxAck : Bool;
+      txData : Array[0..7] of Byte;
+      txId : DWord;
+      txExec : Bool;
+      txState : Int;
+      q : "typeTccTxQueue";
+      ff8 : Array[0..7] of Byte := [8(16#FF)];
+      isoName : Array[0..7] of Byte;
+      label : Array[0..6] of Byte;   // ons structuurlabel
+      loc : Array[0..6] of Byte;   // ons taallabel
+      st : Int;
+      tState : Time;
+      tStatus : Time;   // laatste statusbericht naar de TC
+      tTcStatus : Time;   // laatste statusbericht van de TC
+      edgeEnable : Bool;
+      statusOn : Bool;
+      tcStatusByte : Byte;
+      gotVersion : Bool;
+      verReq : Bool;   // de TC vroeg onze versie
+      lblResp : Bool;
+      locResp : Bool;
+      reqResp : Bool;
+      reqOk : Bool;
+      xferResp : Bool;
+      actResp : Bool;
+      delResp : Bool;
+      lblBytes : Array[0..6] of Byte;   // antwoord van de TC
+      sendDefaults : Bool;   // TC vroeg alle standaardprocesdata
+      iDef : DInt;   // volgende bij sendDefaults
+      iPd : DInt;   // round robin voor de meetopdrachten
+      nSections : DInt;   // secties in de gestuurde beschrijving
+      // beschrijving zoals ze verstuurd wordt: 16#61 + objecten
+      tx : Array[0..8191] of Byte;
+      txLen : DInt;
+      // transportprotocol (TP tot 1785 bytes, ETP daarboven)
+      tpState : Int;
+      tpPackets : DInt;
+      tpNext : DInt;   // volgend pakket (1 = eerste)
+      tpEnd : DInt;   // laatste pakket van het venster
+      tpOffset : DInt;   // ETP: data packet offset van het venster
+      tTp : Time;
+   END_VAR
+
+   VAR_TEMP
+      now : Time;
+      idPd : DWord;
+      idTpCm : DWord;
+      idTpDt : DWord;
+      idEtpCm : DWord;
+      idEtpDt : DWord;
+      d : Array[0..7] of Byte;
+      ok : Bool;
+      i : DInt;
+      j : DInt;
+      k : DInt;
+      n : DInt;
+      x : DInt;
+      sum : DInt;
+      lb : DInt;
+      ub : DInt;
+      pos : DInt;
+      len : DInt;
+      refs : DInt;
+      pf : Byte;
+      ps : Byte;
+      sa : Byte;
+      cmd : Int;
+      sub : Int;
+      el : UInt;
+      ddi : UInt;
+      v : DInt;
+      found : Bool;
+      haveMsg : Bool;
+      msg : Array[0..7] of Byte;
+      sent : Int;
+      due : Bool;
+      cs : DInt;
+      c1 : Int;
+      c2 : Int;
+   END_VAR
+
+
+BEGIN
+	REGION Voorbereiding
+	    #now := TIME_TCK();
+	    #idPd := 16#18CB0000 OR SHL(IN := BYTE_TO_DWORD(#tcAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idTpCm := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#tcAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idTpDt := 16#1CEB0000 OR SHL(IN := BYTE_TO_DWORD(#tcAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idEtpCm := 16#1CC80000 OR SHL(IN := BYTE_TO_DWORD(#tcAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #idEtpDt := 16#1CC70000 OR SHL(IN := BYTE_TO_DWORD(#tcAddress), N := 8) OR BYTE_TO_DWORD(#myAddress);
+	    #haveMsg := FALSE;
+
+	    IF #enable AND NOT #edgeEnable THEN   // (her)start
+	        #diag.stateText := '';
+	        #diag.tcSeen := FALSE;
+	        #diag.labelMatch := FALSE;
+	        #diag.transferError := 0;
+	        #diag.activateErrors := 0;
+	        #diag.poolErrors := 0;
+	        #diag.tpAbortReason := 0;
+	        #diag.valueCommands := 0;
+	        #diag.requests := 0;
+	        #diag.valuesSent := 0;
+	        #diag.unknownPd := 0;
+	        #diag.nacks := 0;
+	        #diag.rxFrames := 0;
+	        #diag.txFrames := 0;
+	        // NAME zoals VT_Client (ISO 11783-5)
+	        #isoName[0] := DWORD_TO_BYTE(UDINT_TO_DWORD(#nameIdentity));
+	        #isoName[1] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#nameIdentity), N := 8));
+	        #isoName[2] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#nameIdentity), N := 16) AND 16#0000001F)
+	                       OR SHL(IN := WORD_TO_BYTE(UINT_TO_WORD(#nameManufacturer) AND 16#0007), N := 5);
+	        #isoName[3] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#nameManufacturer), N := 3));
+	        #isoName[4] := SHL(IN := #nameFunctionInstance AND 16#1F, N := 3);
+	        #isoName[5] := #nameFunction;
+	        #isoName[6] := SHL(IN := #nameDeviceClass AND 16#7F, N := 1);
+	        #isoName[7] := 16#20;
+	        #st := 1;
+	        #q.head := 0;
+	        #q.count := 0;
+	        #tpState := 0;
+	        #txState := 0;
+	        #txExec := FALSE;
+	        #statusOn := FALSE;
+	        #sendDefaults := FALSE;
+	        #ctrl.connected := FALSE;
+	    ELSIF NOT #enable THEN
+	        #st := 0;
+	        #q.count := 0;
+	        #tpState := 0;
+	        #statusOn := FALSE;
+	        #ctrl.connected := FALSE;
+	    END_IF;
+	    #edgeEnable := #enable;
+	END_REGION
+
+	REGION Ontvangstfilter (eigen receive proxy voor TC-verkeer)
+	    IF #st = 1 THEN
+	        FOR #i := 0 TO 15 DO
+	            #filters[#i].ignoreFilter := TRUE;
+	            #filters[#i].messageFilter := 1;   // alleen dataframes
+	            #filters[#i].messageIdFormat := 2;   // alleen 29-bit
+	            #filters[#i].messageId := 16#0;
+	        END_FOR;
+	        // statusbericht van de TC aan iedereen (prioriteit 7 en 6)
+	        #filters[0].messageId := 16#1CCBFF00 OR BYTE_TO_DWORD(#tcAddress);
+	        #filters[1].messageId := 16#18CBFF00 OR BYTE_TO_DWORD(#tcAddress);
+	        // procesdata van de TC aan ons (prioriteit 3, 5, 6 en 7)
+	        #filters[2].messageId := 16#0CCB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        #filters[3].messageId := 16#14CB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        #filters[4].messageId := 16#18CB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        #filters[5].messageId := 16#1CCB0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        // TP.CM en ETP.CM van de TC aan ons (CTS, EoMA, abort)
+	        #filters[6].messageId := 16#1CEC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        #filters[7].messageId := 16#18EC0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        #filters[8].messageId := 16#1CC80000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        #filters[9].messageId := 16#18C80000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        // Acknowledgement (NACK) van de TC
+	        #filters[10].messageId := 16#18E8FF00 OR BYTE_TO_DWORD(#tcAddress);
+	        #filters[11].messageId := 16#18E80000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcAddress);
+	        #n := 12;
+	        // oplopend sorteren
+	        FOR #i := 1 TO #n - 1 DO
+	            FOR #j := #i TO 1 BY -1 DO
+	                IF DWORD_TO_UDINT(#filters[#j - 1].messageId) > DWORD_TO_UDINT(#filters[#j].messageId) THEN
+	                    #fTmp := #filters[#j];
+	                    #filters[#j] := #filters[#j - 1];
+	                    #filters[#j - 1] := #fTmp;
+	                ELSE
+	                    EXIT;
+	                END_IF;
+	            END_FOR;
+	        END_FOR;
+	        FOR #i := 0 TO #n - 1 DO
+	            #filters[#i].ignoreFilter := FALSE;
+	        END_FOR;
+	        #nFilters := DINT_TO_USINT(#n);
+	        #filterExec := TRUE;
+	        #st := 2;
+	        #tState := #now;
+	    END_IF;
+
+	    #setFilter(execute := #filterExec,
+	               proxyIndex := #rxProxyIndex,
+	               hwIoOfTransparentModul := #hwIdCmCan,
+	               cntOfFilter := #nFilters,
+	               filterData := #filters);
+
+	    IF #st = 2 THEN
+	        IF #setFilter.done THEN
+	            #filterExec := FALSE;
+	            #st := 5;
+	            #tState := #now;
+	        ELSIF #setFilter.error OR "TCC_Elapsed"(since := #tState, now := #now) > T#5S THEN
+	            #diag.filterStatus := #setFilter.status;
+	            #filterExec := FALSE;
+	            #st := 900;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Ontvangen (één frame per handshake)
+	    #rcv(enable := #st >= 5,
+	         canModulStatusByte := #canStatus,
+	         deviceType := FALSE,
+	         ignoreRcvFilterSetting := FALSE,
+	         resetRcvMsgBuffer := FALSE,
+	         ackMessage := #rxAck,
+	         inputArea := #rxProxyIn,
+	         outputArea := #rxProxyOut,
+	         messageData := #rxData);
+	    #diag.rcvStatus := #rcv.status;
+
+	    #rxAck := #rcv.valid AND NOT #rxAck;
+
+	    IF #rxAck THEN
+	        #diag.rxFrames := #diag.rxFrames + 1;
+	        #pf := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 16));
+	        #ps := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 8));
+	        #sa := DWORD_TO_BYTE(#rcv.messageId);
+
+	        IF #pf = 16#CB AND #sa = #tcAddress THEN
+	            // ---- procesdata (PGN 0xCB00)
+	            IF #ps = 16#FF AND #rxData[0] = 16#FE THEN   // statusbericht van de TC
+	                #diag.tcSeen := TRUE;
+	                #tTcStatus := #now;
+	                #tcStatusByte := #rxData[4];
+	                #ctrl.taskActive := (#rxData[4] AND 16#01) <> 0;
+	            ELSIF #ps = #myAddress THEN
+	                FOR #i := 0 TO 7 DO
+	                    #msg[#i] := #rxData[#i];
+	                END_FOR;
+	                #haveMsg := TRUE;
+	            END_IF;
+
+	        ELSIF #pf = 16#EC AND #ps = #myAddress AND #sa = #tcAddress THEN
+	            // ---- TP.CM over onze beschrijving (PGN 0x00CB00)
+	            IF #rxData[5] = 16#00 AND #rxData[6] = 16#CB AND #rxData[7] = 16#00 THEN
+	                IF #rxData[0] = 16#11 AND (#tpState = 2 OR #tpState = 3) THEN   // CTS
+	                    #n := BYTE_TO_DINT(#rxData[1]);
+	                    IF #n > 0 THEN
+	                        #tpNext := BYTE_TO_DINT(#rxData[2]);
+	                        #tpEnd := #tpNext + #n - 1;
+	                        IF #tpEnd > #tpPackets THEN
+	                            #tpEnd := #tpPackets;
+	                        END_IF;
+	                        #tpState := 3;
+	                    END_IF;
+	                    #tTp := #now;
+	                ELSIF #rxData[0] = 16#13 AND #tpState >= 2 AND #tpState <= 3 THEN   // End of Message Ack
+	                    #tpState := 5;
+	                ELSIF #rxData[0] = 16#FF AND #tpState >= 1 AND #tpState <= 3 THEN   // Abort
+	                    #diag.tpAbortReason := #rxData[1];
+	                    #tpState := 9;
+	                END_IF;
+	            END_IF;
+
+	        ELSIF #pf = 16#C8 AND #ps = #myAddress AND #sa = #tcAddress THEN
+	            // ---- ETP.CM over onze beschrijving
+	            IF #rxData[5] = 16#00 AND #rxData[6] = 16#CB AND #rxData[7] = 16#00 THEN
+	                IF #rxData[0] = 16#15 AND #tpState >= 12 AND #tpState <= 14 THEN   // CTS
+	                    #n := BYTE_TO_DINT(#rxData[1]);
+	                    IF #n > 0 THEN
+	                        #tpNext := BYTE_TO_DINT(#rxData[2]) + BYTE_TO_DINT(#rxData[3]) * 256 + BYTE_TO_DINT(#rxData[4]) * 65536;
+	                        #tpEnd := #tpNext + #n - 1;
+	                        IF #tpEnd > #tpPackets THEN
+	                            #tpEnd := #tpPackets;
+	                        END_IF;
+	                        #tpState := 13;   // DPO en dan de pakketten
+	                    END_IF;
+	                    #tTp := #now;
+	                ELSIF #rxData[0] = 16#17 AND #tpState >= 12 AND #tpState <= 14 THEN   // End of Message Ack
+	                    #tpState := 5;
+	                ELSIF #rxData[0] = 16#FF AND #tpState >= 11 AND #tpState <= 14 THEN   // Abort
+	                    #diag.tpAbortReason := #rxData[1];
+	                    #tpState := 9;
+	                END_IF;
+	            END_IF;
+
+	        ELSIF #pf = 16#E8 AND #sa = #tcAddress AND (#ps = 16#FF OR #ps = #myAddress) THEN
+	            // ---- NACK van de TC voor procesdata aan ons: opnieuw aanmelden
+	            IF #rxData[0] = 16#01 AND #rxData[4] = #myAddress AND #rxData[5] = 16#00 AND #rxData[6] = 16#CB AND #rxData[7] = 16#00 THEN
+	                #diag.nacks := #diag.nacks + 1;
+	                IF #st >= 10 AND #st < 900 THEN
+	                    #st := 5;
+	                    #tState := #now;
+	                    #tpState := 0;
+	                    #statusOn := FALSE;
+	                    #ctrl.connected := FALSE;
+	                END_IF;
+	            END_IF;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Bericht van de TC verwerken
+	    IF #haveMsg THEN
+	        #cmd := BYTE_TO_INT(#msg[0] AND 16#0F);
+	        #sub := BYTE_TO_INT(SHR(IN := #msg[0], N := 4));
+	        #el := WORD_TO_UINT(SHR(IN := BYTE_TO_WORD(#msg[0]), N := 4) OR SHL(IN := BYTE_TO_WORD(#msg[1]), N := 4));
+	        #ddi := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[3]), N := 8) OR BYTE_TO_WORD(#msg[2]));
+	        #v := DWORD_TO_DINT(SHL(IN := BYTE_TO_DWORD(#msg[7]), N := 24) OR SHL(IN := BYTE_TO_DWORD(#msg[6]), N := 16)
+	                            OR SHL(IN := BYTE_TO_DWORD(#msg[5]), N := 8) OR BYTE_TO_DWORD(#msg[4]));
+	        #lb := LOWER_BOUND(ARR := #pd, DIM := 1);
+	        #ub := UPPER_BOUND(ARR := #pd, DIM := 1);
+	        #found := FALSE;
+	        #k := #lb;
+	        IF #cmd >= 2 AND #cmd <= 10 THEN   // opdracht voor één procesdata-element
+	            FOR #i := #lb TO #ub DO
+	                IF #pd[#i].element = #el AND #pd[#i].ddi = #ddi THEN
+	                    #found := TRUE;
+	                    #k := #i;
+	                    EXIT;
+	                END_IF;
+	            END_FOR;
+	        END_IF;
+
+	        CASE #cmd OF
+	            0:  // technische gegevens
+	                IF #sub = 0 THEN   // de TC vraagt onze versie
+	                    #verReq := TRUE;
+	                ELSIF #sub = 1 THEN   // versie van de TC
+	                    #diag.tcVersion := BYTE_TO_USINT(#msg[1]);
+	                    #diag.tcOptions := #msg[3];
+	                    #diag.tcBooms := BYTE_TO_USINT(#msg[5]);
+	                    #diag.tcSections := BYTE_TO_USINT(#msg[6]);
+	                    #diag.tcChannels := BYTE_TO_USINT(#msg[7]);
+	                    #ctrl.tcVersion := #diag.tcVersion;
+	                    #gotVersion := TRUE;
+	                END_IF;
+
+	            1:  // device descriptor: antwoorden van de TC
+	                CASE #sub OF
+	                    1:  // structuurlabel
+	                        FOR #i := 0 TO 6 DO
+	                            #lblBytes[#i] := #msg[#i + 1];
+	                        END_FOR;
+	                        #lblResp := TRUE;
+	                    3:  // taallabel
+	                        FOR #i := 0 TO 6 DO
+	                            #lblBytes[#i] := #msg[#i + 1];
+	                        END_FOR;
+	                        #locResp := TRUE;
+	                    5:  // antwoord op Request Object-pool Transfer
+	                        #reqOk := #msg[1] = 16#00;
+	                        #reqResp := TRUE;
+	                    7:  // antwoord op Object-pool Transfer
+	                        #diag.transferError := #msg[1];
+	                        #xferResp := TRUE;
+	                    9:  // antwoord op activeren
+	                        #diag.activateErrors := #msg[1];
+	                        #diag.faultyParent := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[3]), N := 8) OR BYTE_TO_WORD(#msg[2]));
+	                        #diag.faultyObject := WORD_TO_UINT(SHL(IN := BYTE_TO_WORD(#msg[5]), N := 8) OR BYTE_TO_WORD(#msg[4]));
+	                        #diag.poolErrors := #msg[6];
+	                        #actResp := TRUE;
+	                    11:  // antwoord op wissen
+	                        #delResp := TRUE;
+	                END_CASE;
+
+	            2:  // Request Value
+	                #diag.requests := #diag.requests + 1;
+	                IF #ddi = 16#DFFF AND #el = 0 THEN   // alle standaardprocesdata
+	                    #sendDefaults := TRUE;
+	                    #iDef := #lb;
+	                ELSIF #found THEN
+	                    #d[0] := SHL(IN := WORD_TO_BYTE(UINT_TO_WORD(#el) AND 16#000F), N := 4) OR 16#03;
+	                    #d[1] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#el), N := 4));
+	                    #d[2] := #msg[2];
+	                    #d[3] := #msg[3];
+	                    #d[4] := DWORD_TO_BYTE(DINT_TO_DWORD(#pd[#k].value));
+	                    #d[5] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#k].value), N := 8));
+	                    #d[6] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#k].value), N := 16));
+	                    #d[7] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#k].value), N := 24));
+	                    IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                        #diag.valuesSent := #diag.valuesSent + 1;
+	                    END_IF;
+	                ELSE
+	                    #diag.unknownPd := #diag.unknownPd + 1;
+	                    #diag.lastUnknownElement := #el;
+	                    #diag.lastUnknownDdi := #ddi;
+	                END_IF;
+
+	            3, 10:  // Value (zetten), Set Value and Acknowledge
+	                #diag.valueCommands := #diag.valueCommands + 1;
+	                IF #found AND #pd[#k].settable THEN
+	                    #pd[#k].value := #v;
+	                    #pd[#k].fromTc := TRUE;
+	                ELSIF NOT #found THEN
+	                    #diag.unknownPd := #diag.unknownPd + 1;
+	                    #diag.lastUnknownElement := #el;
+	                    #diag.lastUnknownDdi := #ddi;
+	                END_IF;
+	                IF #cmd = 10 THEN   // Process Data Acknowledge
+	                    #d := #ff8;
+	                    #d[0] := SHL(IN := WORD_TO_BYTE(UINT_TO_WORD(#el) AND 16#000F), N := 4) OR 16#0D;
+	                    #d[1] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#el), N := 4));
+	                    #d[2] := #msg[2];
+	                    #d[3] := #msg[3];
+	                    IF NOT #found THEN
+	                        #d[4] := 16#04;   // DDI niet ondersteund door dit element
+	                    ELSIF NOT #pd[#k].settable THEN
+	                        #d[4] := 16#10;   // waarde niet instelbaar
+	                    ELSE
+	                        #d[4] := 16#00;
+	                    END_IF;
+	                    #d[5] := 16#FA;   // bevestigd commando: Set Value and Acknowledge
+	                    #ok := "TCC_Push"(id := #idPd, data := #d, q := #q);
+	                END_IF;
+
+	            4:  // meetopdracht: tijdsinterval (ms)
+	                IF #found THEN
+	                    IF #v > 0 THEN
+	                        #pd[#k].timeInterval := DINT_TO_UDINT(#v);
+	                    ELSE
+	                        #pd[#k].timeInterval := 0;
+	                    END_IF;
+	                    #pd[#k].sent := FALSE;
+	                END_IF;
+
+	            8:  // meetopdracht: bij verandering
+	                IF #found THEN
+	                    #pd[#k].changeThreshold := #v;
+	                    #pd[#k].sent := FALSE;
+	                END_IF;
+
+	            // 5 afstand, 6/7 min/max-drempel, 9 peer control, 13 PDACK: niet gebruikt
+	        END_CASE;
+	    END_IF;
+	END_REGION
+
+	REGION Toestandsmachine
+	    CASE #st OF
+	        5:  // wachten op de opstarttijd en het statusbericht van de TC
+	            IF "TCC_Elapsed"(since := #tState, now := #now) >= #startupDelay AND #diag.tcSeen
+	                AND "TCC_Elapsed"(since := #tTcStatus, now := #now) < T#3S THEN
+	                #st := 10;
+	            END_IF;
+
+	        10:  // Working Set Master en eerste statusbericht
+	            #d := #ff8;
+	            #d[0] := 16#01;   // 1 lid in de werkset
+	            #ok := "TCC_Push"(id := 16#1CFE0D00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q);
+	            #statusOn := TRUE;
+	            #tStatus := #now - T#3S;   // meteen sturen
+	            #st := 20;
+
+	        20:  // versie van de TC vragen
+	            #d := #ff8;
+	            #d[0] := 16#00;
+	            #gotVersion := FALSE;
+	            IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                #tState := #now;
+	                #st := 21;
+	            END_IF;
+
+	        21:
+	            IF #gotVersion THEN
+	                #tState := #now;
+	                #st := 22;
+	            ELSIF "TCC_Elapsed"(since := #tState, now := #now) > T#2S THEN
+	                #st := 20;   // opnieuw vragen
+	            END_IF;
+
+	        22:  // de TC mag onze versie vragen (niet verplicht)
+	            IF #verReq OR "TCC_Elapsed"(since := #tState, now := #now) > T#6S THEN
+	                #st := 30;
+	            END_IF;
+
+	        30:  // beschrijving klaarmaken: secties, maten, NAME, label
+	            #n := USINT_TO_DINT(#sectionCount);
+	            IF #n <= 0 OR #n > USINT_TO_DINT(#info.maxSections) THEN
+	                #n := USINT_TO_DINT(#info.maxSections);
+	            END_IF;
+	            #nSections := #n;
+	            #ctrl.sectionCount := DINT_TO_USINT(#n);
+	            // Y van de secties uit de breedtes, symmetrisch rond het midden
+	            IF #autoLayout THEN
+	                #lb := LOWER_BOUND(ARR := #sectionWidth, DIM := 1);
+	                #sum := 0;
+	                FOR #i := 0 TO #n - 1 DO
+	                    #sum := #sum + #sectionWidth[#lb + #i];
+	                END_FOR;
+	                #x := -#sum / 2;
+	                FOR #i := 0 TO #n - 1 DO
+	                    #sectionY[LOWER_BOUND(ARR := #sectionY, DIM := 1) + #i] := #x + #sectionWidth[#lb + #i] / 2;
+	                    #x := #x + #sectionWidth[#lb + #i];
+	                END_FOR;
+	            END_IF;
+	            // breedte, X en Y per sectie in de beschrijving schrijven; controlegetal voor het label
+	            #lb := LOWER_BOUND(ARR := #pool, DIM := 1);
+	            #cs := #n * 101;
+	            FOR #i := 0 TO UINT_TO_DINT(#info.patchCount) - 1 DO
+	                #k := USINT_TO_DINT(#patchSection[LOWER_BOUND(ARR := #patchSection, DIM := 1) + #i]);
+	                IF #k >= 1 AND #k <= #n THEN
+	                    CASE USINT_TO_INT(#patchKind[LOWER_BOUND(ARR := #patchKind, DIM := 1) + #i]) OF
+	                        1:
+	                            #v := #sectionWidth[LOWER_BOUND(ARR := #sectionWidth, DIM := 1) + #k - 1];
+	                        2:
+	                            #v := #sectionX[LOWER_BOUND(ARR := #sectionX, DIM := 1) + #k - 1];
+	                        ELSE
+	                            #v := #sectionY[LOWER_BOUND(ARR := #sectionY, DIM := 1) + #k - 1];
+	                    END_CASE;
+	                    #pos := #lb + UDINT_TO_DINT(#patchOffset[LOWER_BOUND(ARR := #patchOffset, DIM := 1) + #i]);
+	                    #pool[#pos] := DWORD_TO_BYTE(DINT_TO_DWORD(#v));
+	                    #pool[#pos + 1] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#v), N := 8));
+	                    #pool[#pos + 2] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#v), N := 16));
+	                    #pool[#pos + 3] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#v), N := 24));
+	                    #cs := (#cs * 31 + (#v MOD 100003)) MOD 1000003;
+	                END_IF;
+	            END_FOR;
+	            IF #cs < 0 THEN
+	                #cs := -#cs;
+	            END_IF;
+	            // NAME van de werkset
+	            FOR #i := 0 TO 7 DO
+	                #pool[#lb + UDINT_TO_DINT(#info.nameOffset) + #i] := #isoName[#i];
+	            END_FOR;
+	            // structuurlabel: laatste 2 tekens volgens secties en maten (0-9, A-Z)
+	            #cs := #cs MOD 1296;
+	            #c1 := DINT_TO_INT(#cs / 36);
+	            #c2 := DINT_TO_INT(#cs MOD 36);
+	            IF #c1 < 10 THEN
+	                #pool[#lb + UDINT_TO_DINT(#info.labelOffset) + 5] := INT_TO_BYTE(48 + #c1);
+	            ELSE
+	                #pool[#lb + UDINT_TO_DINT(#info.labelOffset) + 5] := INT_TO_BYTE(55 + #c1);
+	            END_IF;
+	            IF #c2 < 10 THEN
+	                #pool[#lb + UDINT_TO_DINT(#info.labelOffset) + 6] := INT_TO_BYTE(48 + #c2);
+	            ELSE
+	                #pool[#lb + UDINT_TO_DINT(#info.labelOffset) + 6] := INT_TO_BYTE(55 + #c2);
+	            END_IF;
+	            FOR #i := 0 TO 6 DO
+	                #label[#i] := #pool[#lb + UDINT_TO_DINT(#info.labelOffset) + #i];
+	                #loc[#i] := #pool[#lb + UDINT_TO_DINT(#info.labelOffset) + 7 + #i];
+	            END_FOR;
+	            // kinderen van de boom: vaste + 2 per groep van 16 gebruikte secties
+	            #refs := UINT_TO_DINT(#info.boomFixedRefs) + 2 * ((#n + 15) / 16);
+	            #pool[#lb + UDINT_TO_DINT(#info.boomCountOffset)] := DINT_TO_BYTE(#refs);
+	            #pool[#lb + UDINT_TO_DINT(#info.boomCountOffset) + 1] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#refs), N := 8));
+	            // te sturen bytes samenstellen: 16#61 (Object-pool Transfer) + de gebruikte objecten
+	            #tx[0] := 16#61;
+	            #txLen := 1;
+	            #ok := TRUE;
+	            FOR #i := 0 TO UINT_TO_DINT(#info.objCount) - 1 DO
+	                #k := USINT_TO_DINT(#objSection[LOWER_BOUND(ARR := #objSection, DIM := 1) + #i]);
+	                IF #k <= #n THEN
+	                    #pos := UDINT_TO_DINT(#objStart[LOWER_BOUND(ARR := #objStart, DIM := 1) + #i]);
+	                    #len := UINT_TO_DINT(#objLength[LOWER_BOUND(ARR := #objLength, DIM := 1) + #i]);
+	                    IF #i = UINT_TO_DINT(#info.boomIndex) THEN
+	                        #len := UDINT_TO_DINT(#info.boomCountOffset) + 2 - #pos + 2 * #refs;
+	                    END_IF;
+	                    IF #txLen + #len > 8192 THEN
+	                        #ok := FALSE;
+	                        EXIT;
+	                    END_IF;
+	                    FOR #j := 0 TO #len - 1 DO
+	                        #tx[#txLen + #j] := #pool[#lb + #pos + #j];
+	                    END_FOR;
+	                    #txLen := #txLen + #len;
+	                END_IF;
+	            END_FOR;
+	            #diag.poolBytes := DINT_TO_UDINT(#txLen - 1);
+	            #diag.etp := #txLen > 1785;
+	            IF #ok THEN
+	                #st := 31;
+	            ELSE
+	                #st := 903;
+	            END_IF;
+
+	        31:  // welk structuurlabel heeft de TC van ons?
+	            #d := #ff8;
+	            #d[0] := 16#01;
+	            #lblResp := FALSE;
+	            IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                #tState := #now;
+	                #st := 32;
+	            END_IF;
+
+	        32:
+	            IF #lblResp THEN
+	                #found := TRUE;   // alles 16#FF = geen
+	                #ok := TRUE;   // gelijk aan het onze
+	                FOR #i := 0 TO 6 DO
+	                    IF #lblBytes[#i] <> 16#FF THEN
+	                        #found := FALSE;
+	                    END_IF;
+	                    IF #lblBytes[#i] <> #label[#i] THEN
+	                        #ok := FALSE;
+	                    END_IF;
+	                END_FOR;
+	                #diag.labelMatch := #ok;
+	                IF #found THEN
+	                    #st := 40;
+	                ELSIF #ok THEN
+	                    #st := 35;
+	                ELSE
+	                    #st := 38;
+	                END_IF;
+	            ELSIF "TCC_Elapsed"(since := #tState, now := #now) > T#2S THEN
+	                #st := 31;
+	            END_IF;
+
+	        35:  // taallabel
+	            #d := #ff8;
+	            #d[0] := 16#21;
+	            #locResp := FALSE;
+	            IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                #tState := #now;
+	                #st := 36;
+	            END_IF;
+
+	        36:
+	            IF #locResp THEN
+	                #found := TRUE;
+	                #ok := TRUE;
+	                FOR #i := 0 TO 6 DO
+	                    IF #lblBytes[#i] <> 16#FF THEN
+	                        #found := FALSE;
+	                    END_IF;
+	                    IF #lblBytes[#i] <> #loc[#i] THEN
+	                        #ok := FALSE;
+	                    END_IF;
+	                END_FOR;
+	                IF #found THEN
+	                    #st := 40;
+	                ELSIF #ok THEN
+	                    #st := 50;   // de TC heeft deze beschrijving al: meteen activeren
+	                ELSE
+	                    #st := 38;
+	                END_IF;
+	            ELSIF "TCC_Elapsed"(since := #tState, now := #now) > T#2S THEN
+	                #st := 35;
+	            END_IF;
+
+	        38:  // oude beschrijving bij de TC wissen
+	            #d := #ff8;
+	            #d[0] := 16#A1;
+	            #delResp := FALSE;
+	            IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                #tState := #now;
+	                #st := 39;
+	            END_IF;
+
+	        39:
+	            IF #delResp OR "TCC_Elapsed"(since := #tState, now := #now) > T#2S THEN
+	                #st := 40;
+	            END_IF;
+
+	        40:  // mag de beschrijving gestuurd worden? (grootte zonder de commandobyte)
+	            #d := #ff8;
+	            #d[0] := 16#41;
+	            #d[1] := DINT_TO_BYTE(#txLen - 1);
+	            #d[2] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen - 1), N := 8));
+	            #d[3] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen - 1), N := 16));
+	            #d[4] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen - 1), N := 24));
+	            #reqResp := FALSE;
+	            IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                #tState := #now;
+	                #st := 41;
+	            END_IF;
+
+	        41:
+	            IF #reqResp THEN
+	                IF #reqOk THEN
+	                    #st := 42;
+	                ELSE
+	                    #st := 902;   // te weinig geheugen in de TC
+	                END_IF;
+	            ELSIF "TCC_Elapsed"(since := #tState, now := #now) > T#2S THEN
+	                #st := 40;
+	            END_IF;
+
+	        42:  // beschrijving sturen: TP tot 1785 bytes, anders ETP
+	            IF #tpState = 0 THEN
+	                #tpPackets := (#txLen + 6) / 7;
+	                IF #txLen <= 1785 THEN
+	                    #tpState := 1;
+	                ELSE
+	                    #tpState := 11;
+	                END_IF;
+	                #st := 43;
+	            END_IF;
+
+	        43:
+	            IF #tpState = 5 THEN
+	                #tpState := 0;
+	                #xferResp := FALSE;
+	                #tState := #now;
+	                #st := 44;
+	            ELSIF #tpState = 9 THEN
+	                #tpState := 0;
+	                #st := 904;
+	            END_IF;
+
+	        44:  // de TC controleert de beschrijving
+	            IF #xferResp THEN
+	                IF #diag.transferError = 16#00 THEN
+	                    #st := 50;
+	                ELSE
+	                    #st := 906;
+	                END_IF;
+	            ELSIF "TCC_Elapsed"(since := #tState, now := #now) > T#10S THEN
+	                #st := 907;
+	            END_IF;
+
+	        50:  // activeren
+	            #d := #ff8;
+	            #d[0] := 16#81;
+	            #actResp := FALSE;
+	            IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                #tState := #now;
+	                #st := 51;
+	            END_IF;
+
+	        51:
+	            IF #actResp THEN
+	                IF #diag.activateErrors = 16#00 THEN
+	                    FOR #i := LOWER_BOUND(ARR := #pd, DIM := 1) TO UPPER_BOUND(ARR := #pd, DIM := 1) DO
+	                        #pd[#i].timeInterval := 0;
+	                        #pd[#i].changeThreshold := 0;
+	                        #pd[#i].sent := FALSE;
+	                    END_FOR;
+	                    #st := 70;
+	                ELSE
+	                    #st := 908;
+	                END_IF;
+	            ELSIF "TCC_Elapsed"(since := #tState, now := #now) > T#10S THEN
+	                #st := 907;
+	            END_IF;
+
+	        // 70: verbonden, zie region Procesdata
+	    END_CASE;
+
+	    // TC verdwenen? (geen statusbericht gedurende 6 s) → opnieuw aanmelden
+	    IF #st >= 10 AND #st < 900 AND "TCC_Elapsed"(since := #tTcStatus, now := #now) > T#6S THEN
+	        #diag.tcSeen := FALSE;
+	        #tpState := 0;
+	        #statusOn := FALSE;
+	        #ctrl.connected := FALSE;
+	        #st := 5;
+	        #tState := #now - #startupDelay;   // geen nieuwe opstarttijd
+	    END_IF;
+	END_REGION
+
+	REGION Statusbericht (elke 2 s) en versie
+	    IF #statusOn AND #st >= 10 AND #st < 900 AND "TCC_Elapsed"(since := #tStatus, now := #now) >= T#2S THEN
+	        #d[0] := 16#FF;   // Client Task
+	        #d[1] := 16#FF;
+	        #d[2] := 16#FF;
+	        #d[3] := 16#FF;
+	        #d[4] := #tcStatusByte AND 16#01;
+	        #d[5] := 16#00;
+	        #d[6] := 16#00;
+	        #d[7] := 16#00;
+	        IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	            #tStatus := #now;
+	        END_IF;
+	    END_IF;
+	    // onze versie: 3, opties documentatie + TC-GEO + sectiebesturing, 1 boom, n secties
+	    IF #verReq AND #st >= 20 AND #st < 900 THEN
+	        #d[0] := 16#10;
+	        #d[1] := 16#03;
+	        #d[2] := 16#FF;
+	        #d[3] := 16#13;
+	        #d[4] := 16#00;
+	        #d[5] := 16#01;
+	        IF #nSections > 0 THEN
+	            #d[6] := DINT_TO_BYTE(#nSections);
+	        ELSE
+	            #d[6] := USINT_TO_BYTE(#info.maxSections);
+	        END_IF;
+	        #d[7] := 16#00;
+	        IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	            #verReq := FALSE;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Procesdata naar de TC (verbonden)
+	    IF #st = 70 THEN
+	        #lb := LOWER_BOUND(ARR := #pd, DIM := 1);
+	        #ub := UPPER_BOUND(ARR := #pd, DIM := 1);
+	        #sent := 0;
+	        // alle standaardprocesdata (Request Value voor DDI 16#DFFF)
+	        WHILE #sendDefaults AND #sent < 4 AND #q.count < 48 DO
+	            IF #iDef > #ub THEN
+	                #sendDefaults := FALSE;
+	            ELSE
+	                #el := #pd[#iDef].element;
+	                #d[0] := SHL(IN := WORD_TO_BYTE(UINT_TO_WORD(#el) AND 16#000F), N := 4) OR 16#03;
+	                #d[1] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#el), N := 4));
+	                #d[2] := WORD_TO_BYTE(UINT_TO_WORD(#pd[#iDef].ddi));
+	                #d[3] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#pd[#iDef].ddi), N := 8));
+	                #d[4] := DWORD_TO_BYTE(DINT_TO_DWORD(#pd[#iDef].value));
+	                #d[5] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#iDef].value), N := 8));
+	                #d[6] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#iDef].value), N := 16));
+	                #d[7] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#iDef].value), N := 24));
+	                IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                    #pd[#iDef].sent := TRUE;
+	                    #pd[#iDef].tSent := #now;
+	                    #pd[#iDef].lastSent := #pd[#iDef].value;
+	                    #diag.valuesSent := #diag.valuesSent + 1;
+	                    #sent := #sent + 1;
+	                END_IF;
+	                #iDef := #iDef + 1;
+	            END_IF;
+	        END_WHILE;
+	        // meetopdrachten van de TC: tijdsinterval en bij verandering
+	        FOR #j := #lb TO #ub DO
+	            IF #sent >= 4 OR #q.count >= 48 THEN
+	                EXIT;
+	            END_IF;
+	            #iPd := #iPd + 1;
+	            IF #iPd < #lb OR #iPd > #ub THEN
+	                #iPd := #lb;
+	            END_IF;
+	            #due := FALSE;
+	            IF #pd[#iPd].timeInterval > 0 AND (NOT #pd[#iPd].sent OR
+	                "TCC_Elapsed"(since := #pd[#iPd].tSent, now := #now) >= DINT_TO_TIME(UDINT_TO_DINT(#pd[#iPd].timeInterval))) THEN
+	                #due := TRUE;
+	            END_IF;
+	            IF #pd[#iPd].changeThreshold > 0 AND (NOT #pd[#iPd].sent OR ABS(#pd[#iPd].value - #pd[#iPd].lastSent) >= #pd[#iPd].changeThreshold) THEN
+	                #due := TRUE;
+	            END_IF;
+	            IF #due THEN
+	                #el := #pd[#iPd].element;
+	                #d[0] := SHL(IN := WORD_TO_BYTE(UINT_TO_WORD(#el) AND 16#000F), N := 4) OR 16#03;
+	                #d[1] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#el), N := 4));
+	                #d[2] := WORD_TO_BYTE(UINT_TO_WORD(#pd[#iPd].ddi));
+	                #d[3] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#pd[#iPd].ddi), N := 8));
+	                #d[4] := DWORD_TO_BYTE(DINT_TO_DWORD(#pd[#iPd].value));
+	                #d[5] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#iPd].value), N := 8));
+	                #d[6] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#iPd].value), N := 16));
+	                #d[7] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#pd[#iPd].value), N := 24));
+	                IF "TCC_Push"(id := #idPd, data := #d, q := #q) THEN
+	                    #pd[#iPd].sent := TRUE;
+	                    #pd[#iPd].tSent := #now;
+	                    #pd[#iPd].lastSent := #pd[#iPd].value;
+	                    #diag.valuesSent := #diag.valuesSent + 1;
+	                    #sent := #sent + 1;
+	                END_IF;
+	            END_IF;
+	        END_FOR;
+	    END_IF;
+	END_REGION
+
+	REGION Transport protocol – zender (TP en ETP)
+	    CASE #tpState OF
+	        1:  // TP: Request To Send
+	            #d[0] := 16#10;
+	            #d[1] := DINT_TO_BYTE(#txLen);
+	            #d[2] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen), N := 8));
+	            #d[3] := DINT_TO_BYTE(#tpPackets);
+	            #d[4] := 16#FF;   // geen maximum per CTS
+	            #d[5] := 16#00;   // PGN 0x00CB00 (procesdata)
+	            #d[6] := 16#CB;
+	            #d[7] := 16#00;
+	            IF "TCC_Push"(id := #idTpCm, data := #d, q := #q) THEN
+	                #tTp := #now;
+	                #tpState := 2;
+	            END_IF;
+
+	        2, 12:  // wachten op CTS of EoMA
+	            IF "TCC_Elapsed"(since := #tTp, now := #now) > T#3S THEN
+	                #d := #ff8;
+	                #d[0] := 16#FF;   // Abort, reden 3 = timeout
+	                #d[1] := 16#03;
+	                #d[5] := 16#00;
+	                #d[6] := 16#CB;
+	                #d[7] := 16#00;
+	                IF #tpState = 2 THEN
+	                    #ok := "TCC_Push"(id := #idTpCm, data := #d, q := #q);
+	                ELSE
+	                    #ok := "TCC_Push"(id := #idEtpCm, data := #d, q := #q);
+	                END_IF;
+	                #diag.tpAbortReason := 16#03;
+	                #tpState := 9;
+	            END_IF;
+
+	        3:  // TP: gevraagde DT-pakketten in de wachtrij zetten zolang er plaats is
+	            WHILE #tpNext <= #tpEnd AND #q.count < 64 DO
+	                #d[0] := DINT_TO_BYTE(#tpNext);
+	                FOR #k := 0 TO 6 DO
+	                    #i := (#tpNext - 1) * 7 + #k;
+	                    IF #i < #txLen THEN
+	                        #d[#k + 1] := #tx[#i];
+	                    ELSE
+	                        #d[#k + 1] := 16#FF;
+	                    END_IF;
+	                END_FOR;
+	                #ok := "TCC_Push"(id := #idTpDt, data := #d, q := #q);
+	                #tpNext := #tpNext + 1;
+	            END_WHILE;
+	            IF #tpNext > #tpEnd THEN
+	                #tTp := #now;
+	                #tpState := 2;
+	            END_IF;
+
+	        11:  // ETP: Request To Send (grootte 32 bit)
+	            #d[0] := 16#14;
+	            #d[1] := DINT_TO_BYTE(#txLen);
+	            #d[2] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen), N := 8));
+	            #d[3] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen), N := 16));
+	            #d[4] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen), N := 24));
+	            #d[5] := 16#00;
+	            #d[6] := 16#CB;
+	            #d[7] := 16#00;
+	            IF "TCC_Push"(id := #idEtpCm, data := #d, q := #q) THEN
+	                #tTp := #now;
+	                #tpState := 12;
+	            END_IF;
+
+	        13:  // ETP: Data Packet Offset voor dit venster
+	            #tpOffset := #tpNext - 1;
+	            #d[0] := 16#16;
+	            #d[1] := DINT_TO_BYTE(#tpEnd - #tpNext + 1);
+	            #d[2] := DINT_TO_BYTE(#tpOffset);
+	            #d[3] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#tpOffset), N := 8));
+	            #d[4] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#tpOffset), N := 16));
+	            #d[5] := 16#00;
+	            #d[6] := 16#CB;
+	            #d[7] := 16#00;
+	            IF "TCC_Push"(id := #idEtpCm, data := #d, q := #q) THEN
+	                #tpState := 14;
+	            END_IF;
+
+	        14:  // ETP: pakketten van het venster (volgnummer 1..n ten opzichte van de offset)
+	            WHILE #tpNext <= #tpEnd AND #q.count < 64 DO
+	                #d[0] := DINT_TO_BYTE(#tpNext - #tpOffset);
+	                FOR #k := 0 TO 6 DO
+	                    #i := (#tpNext - 1) * 7 + #k;
+	                    IF #i < #txLen THEN
+	                        #d[#k + 1] := #tx[#i];
+	                    ELSE
+	                        #d[#k + 1] := 16#FF;
+	                    END_IF;
+	                END_FOR;
+	                #ok := "TCC_Push"(id := #idEtpDt, data := #d, q := #q);
+	                #tpNext := #tpNext + 1;
+	            END_WHILE;
+	            IF #tpNext > #tpEnd THEN
+	                #tTp := #now;
+	                #tpState := 12;
+	            END_IF;
+	    END_CASE;
+	END_REGION
+
+	REGION Zenden (één frame per handshake van de transmit proxy)
+	    CASE #txState OF
+	        0:
+	            IF #q.count > 0 THEN
+	                #txId := #q.frame[#q.head].id;
+	                #txData := #q.frame[#q.head].data;
+	                #txExec := TRUE;
+	                #txState := 1;
+	            END_IF;
+	        1:
+	            IF #snd.done OR #snd.error THEN
+	                IF #snd.error THEN
+	                    #diag.sendStatus := #snd.status;
+	                ELSE
+	                    #diag.txFrames := #diag.txFrames + 1;
+	                END_IF;
+	                #q.head := (#q.head + 1) MOD 64;
+	                #q.count := #q.count - 1;
+	                #txExec := FALSE;
+	                #txState := 2;
+	            END_IF;
+	        2:  // één aanroep met execute = FALSE voor de volgende flank
+	            #txState := 0;
+	    END_CASE;
+
+	    #snd(execute := #txExec,
+	         messageIdFormat := TRUE,
+	         messageId := #txId,
+	         rtrFrame := FALSE,
+	         canModulStatusByte := #canStatus,
+	         deviceType := FALSE,
+	         inputArea := #txProxyIn,
+	         outputArea := #txProxyOut,
+	         messageData := #txData);
+
+	    IF #st = 0 THEN
+	        #txExec := FALSE;
+	        #txState := 0;
+	    END_IF;
+	END_REGION
+
+	REGION Uitgangen
+	    #ctrl.connected := #st = 70;
+	    #connected := #ctrl.connected;
+	    #error := #st >= 900;
+	    #state := #st;
+	    CASE #st OF
+	        0: #diag.stateText := 'uit';
+	        1, 2: #diag.stateText := 'ontvangstfilter instellen';
+	        5: #diag.stateText := 'wacht op de TC (opstarttijd)';
+	        10: #diag.stateText := 'aanmelden';
+	        20, 21, 22: #diag.stateText := 'versie uitwisselen';
+	        30: #diag.stateText := 'beschrijving klaarmaken';
+	        31, 32, 35, 36: #diag.stateText := 'labels vergelijken';
+	        38, 39: #diag.stateText := 'oude beschrijving wissen';
+	        40, 41: #diag.stateText := 'overdracht aanvragen';
+	        42, 43: #diag.stateText := 'beschrijving sturen';
+	        44: #diag.stateText := 'TC controleert de beschrijving';
+	        50, 51: #diag.stateText := 'activeren';
+	        70: #diag.stateText := 'verbonden';
+	        900: #diag.stateText := 'fout: filter niet ingesteld';
+	        902: #diag.stateText := 'fout: TC heeft te weinig geheugen';
+	        903: #diag.stateText := 'fout: beschrijving groter dan 8192 bytes';
+	        904: #diag.stateText := 'fout: overdracht afgebroken (tpAbortReason)';
+	        906: #diag.stateText := 'fout: TC weigert de beschrijving (transferError)';
+	        907: #diag.stateText := 'fout: geen antwoord van de TC';
+	        908: #diag.stateText := 'fout: activeren geweigerd (activateErrors)';
+	        ELSE
+	            #diag.stateText := '';
+	    END_CASE;
+	END_REGION
+END_FUNCTION_BLOCK

@@ -8,7 +8,7 @@ const h2 = (b) => '16#' + b.toString(16).toUpperCase().padStart(2, '0');
 const ddiName = Object.fromEntries(Object.entries(DDI).map(([k, v]) => [v, k]));
 
 export function tcSummary(b) {
-  return `${b.bytes.length} bytes, ${b.objects.length} objecten, max. ${b.maxSections} secties, ${b.products.length} product(en), structuurlabel ${b.structureLabel}`;
+  return `${b.bytes.length} bytes, ${b.objects.length} objecten, max. ${b.maxSections} secties, ${b.products.length} instelwaarde(n), structuurlabel ${b.structureLabel}`;
 }
 
 export function tiaTcPool(p) {
@@ -20,8 +20,8 @@ export function tiaTcPool(p) {
     '// =====================================================================',
     `//  ${db} – werktuigbeschrijving (DDOP, ISO 11783-10) "${b.implement.designator}" – ${generatedBy()}`,
     `//  ${tcSummary(b)}.`,
-    '//  Voor FB TC_Client: die stuurt enkel de objecten met objSection = 0 of <= het aantal gebruikte secties,',
-    '//  past breedte en positie per sectie aan (patch…) en kort de kindlijst van de boom in (boom…).',
+    '//  Voor FB TC_Client (tc_client, met 01_TCC_Types.udt): die stuurt enkel de objecten met objSection = 0 of',
+    '//  <= het aantal gebruikte secties, past breedte en positie per sectie aan (patch…) en kort de kindlijst van de boom in.',
     '//  Niet met de hand aanpassen: opnieuw exporteren.',
     '// =====================================================================',
     `DATA_BLOCK "${db}"`,
@@ -30,18 +30,11 @@ export function tiaTcPool(p) {
     `VERSION : ${APP_VERSION}`,
     'NON_RETAIN',
     '   VAR ',
-    '      size : UDInt;   // bytes in data (met het maximum aantal secties)',
-    '      maxSections : USInt;',
-    '      nameOffset : UDInt;   // 8 bytes: NAME van de werkset (schrijft TC_Client)',
-    '      labelOffset : UDInt;   // 7 bytes: structuurlabel; TC_Client past de laatste 2 aan',
-    '      objCount : UInt;',
+    '      info : "typeTcPoolInfo";   // aan TC_Client: info := "<DB>".info',
     `      objStart : Array[0..${n - 1}] of UDInt;   // begin van elk object in data`,
     `      objLength : Array[0..${n - 1}] of UInt;`,
     `      objSection : Array[0..${n - 1}] of USInt;   // 0 = altijd, k = enkel bij k of meer secties`,
-    '      boomIndex : UInt;   // object (in objStart) van de boom',
-    '      boomCountOffset : UDInt;   // UInt: aantal kinderen van de boom',
-    '      boomFixedRefs : UInt;   // kinderen los van de secties; daarna 2 per groep van 16 secties',
-    '      patchCount : UInt;',
+
     `      patchOffset : Array[0..${np - 1}] of UDInt;   // DInt in data`,
     `      patchKind : Array[0..${np - 1}] of USInt;   // 1 = breedte, 2 = X, 3 = Y (mm)`,
     `      patchSection : Array[0..${np - 1}] of USInt;`,
@@ -50,14 +43,17 @@ export function tiaTcPool(p) {
     '',
     '',
     'BEGIN',
-    `   size := ${b.bytes.length};`,
-    `   maxSections := ${b.maxSections};`,
-    `   nameOffset := ${b.nameOffset};`,
-    `   labelOffset := ${b.labelOffset};`,
-    `   objCount := ${n};`,
+    `   info.size := ${b.bytes.length};`,
+    `   info.maxSections := ${b.maxSections};`,
+    `   info.objCount := ${n};`,
+    `   info.nameOffset := ${b.nameOffset};`,
+    `   info.labelOffset := ${b.labelOffset};`,
+    `   info.boomIndex := ${b.boom.index};`,
+    `   info.boomCountOffset := ${b.boom.countOffset};`,
+    `   info.boomFixedRefs := ${b.boom.fixedRefs};`,
+    `   info.patchCount := ${np};`,
   ];
   b.entries.forEach((e, i) => L.push(`   objStart[${i}] := ${e.start}; objLength[${i}] := ${e.length}; objSection[${i}] := ${e.section};   // ${e.obj.table} ${e.obj.id} ${e.obj.designator ?? e.obj.unit ?? ''}`));
-  L.push(`   boomIndex := ${b.boom.index};`, `   boomCountOffset := ${b.boom.countOffset};`, `   boomFixedRefs := ${b.boom.fixedRefs};`, `   patchCount := ${np};`);
   b.patches.forEach((q, i) => L.push(`   patchOffset[${i}] := ${q.offset}; patchKind[${i}] := ${q.kind}; patchSection[${i}] := ${q.section};`));
   for (let i = 0; i < b.bytes.length; i += 16) {
     L.push('   ' + Array.from(b.bytes.slice(i, i + 16), (x, j) => `data[${i + j}] := ${h2(x)};`).join(' '));

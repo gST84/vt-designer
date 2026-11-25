@@ -11,12 +11,15 @@
 import { NONE, PROP, TRIG, encodeDdop, checkDdop } from './ddop.js';
 import { crc32 } from '../zip.js';
 import { latin1 } from '../iso/codec.js';
+import { DDI_SETPOINTS } from './ddi-setpoints.js';
 
 /** DDIs used (ISO 11783-11). */
 export const DDI = {
   setpointVolumeRate: 1, actualVolumeRate: 2,
   setpointMassRate: 6, actualMassRate: 7,
   setpointCountRate: 11, actualCountRate: 12,
+  setpointTillageDepth: 51, actualTillageDepth: 52, setpointSeedingDepth: 56, actualSeedingDepth: 57,
+  setpointWorkingHeight: 61, actualWorkingHeight: 62,
   actualWorkingWidth: 67, actualVolumeContent: 72, maximumVolumeContent: 73,
   actualMassContent: 75, maximumMassContent: 76,
   totalVolume: 80, totalMass: 81, totalCount: 82,
@@ -28,7 +31,11 @@ export const DDI = {
   requestDefaultProcessData: 57343,
 };
 
-/** Product kinds: rate DDIs (raw units), presentation on the terminal and the content/total DDIs. */
+/**
+ * Kinds of setpoint the TC can send per product or channel (a task map can hold any of them): rate DDIs
+ * (raw units), presentation on the terminal, the content/total DDIs for products, and the element type
+ * (3 = bin for a product, 2 = function for a depth or height).
+ */
 export const PRODUCT_KINDS = {
   volume: { nl: 'Vloeibaar (L/ha)', setpoint: DDI.setpointVolumeRate, actual: DDI.actualVolumeRate, rate: ['L/ha', 0.0001, 1],
     content: DDI.actualVolumeContent, capacity: DDI.maximumVolumeContent, contentUnit: ['L', 0.001, 0], total: DDI.totalVolume, totalUnit: ['L', 1, 0],
@@ -38,7 +45,35 @@ export const PRODUCT_KINDS = {
     rawNl: 'mg/m² (= 0,01 kg/ha)', capacityNl: 'kg', capacityRaw: 1000 },
   count: { nl: 'Zaad (korrels/ha)', setpoint: DDI.setpointCountRate, actual: DDI.actualCountRate, rate: ['/ha', 10, 0],
     total: DDI.totalCount, totalUnit: ['#', 1, 0], rawNl: '0,001 /m² (= 10 /ha)' },
+  tillageDepth: { nl: 'Diepte grondbewerking (mm)', setpoint: DDI.setpointTillageDepth, actual: DDI.actualTillageDepth, rate: ['mm', 1, 0], rawNl: 'mm', element: 2 },
+  seedingDepth: { nl: 'Zaaidiepte (mm)', setpoint: DDI.setpointSeedingDepth, actual: DDI.actualSeedingDepth, rate: ['mm', 1, 0], rawNl: 'mm', element: 2 },
+  workingHeight: { nl: 'Werkhoogte (mm)', setpoint: DDI.setpointWorkingHeight, actual: DDI.actualWorkingHeight, rate: ['mm', 1, 0], rawNl: 'mm', element: 2 },
 };
+
+/** Decimals that show one step of the given resolution (0.01 → 2). */
+const decimalsOf = (res) => (res >= 1 ? 0 : Math.min(7, Math.ceil(-Math.log10(res) - 1e-9)));
+
+/**
+ * Kind of a setpoint: one of PRODUCT_KINDS, or 'ddi:<setpoint DDI>' for any pair of DDI_SETPOINTS. A
+ * generic pair is shown in its database unit; rates per area or time hang under a bin, the rest under a
+ * function element.
+ */
+export function kindOf(kind) {
+  if (PRODUCT_KINDS[kind]) return PRODUCT_KINDS[kind];
+  const m = /^ddi:(\d+)$/.exec(String(kind));
+  const row = m && DDI_SETPOINTS.find((r) => r[0] === Number(m[1]));
+  if (!row) return null;
+  const [setpoint, actual, name, unit, res] = row;
+  const rate = /Application Rate|\/m²|\/s$/.test(`${name} ${unit}`);
+  return { nl: `${name}${unit ? ` (${unit})` : ''}`, setpoint, actual, rate: [unit || '-', res, decimalsOf(res)],
+    rawNl: `${String(res).replace('.', ',')} ${unit || '(zonder eenheid)'}`, element: rate ? 3 : 2, generic: true };
+}
+
+/** Choices for the kind of a setpoint: the common ones, then every pair of the DDI database. */
+export const KIND_CHOICES = [
+  ...Object.entries(PRODUCT_KINDS).map(([k, v]) => [k, v.nl]),
+  ...DDI_SETPOINTS.map(([s, a, name, unit]) => [`ddi:${s}`, `DDI ${s}/${a} ${name}${unit ? ` (${unit})` : ''}`]),
+];
 
 /** Connector types (DDI 157). */
 export const CONNECTOR_TYPES = [
@@ -136,15 +171,16 @@ export function buildDdop(implement) {
   // products (bins under the boom)
   const products = [];
   m.products.forEach((pr, i) => {
-    const k = PRODUCT_KINDS[pr.kind];
-    const bin = det(3, pr.name || `Product ${i + 1}`, boom.id);
+    const k = kindOf(pr.kind);
+    const bin = det(k?.element || 3, pr.name || `Product ${i + 1}`, boom.id);
     const info = { index: i + 1, name: bin.designator, kind: pr.kind, element: bin.number };
     if (k) {
       const rate = dvp(...k.rate);
-      child(bin, dpd('Dosis instellen', k.setpoint, PROP.defaultSet | PROP.settable, TRIG.change, rate));
-      child(bin, dpd('Dosis', k.actual, PROP.defaultSet, TRIG.change | TRIG.time, rate));
+      const what = k.element === 2 ? 'Waarde' : 'Dosis';
+      child(bin, dpd(`${what} instellen`, k.setpoint, PROP.defaultSet | PROP.settable, TRIG.change, rate));
+      child(bin, dpd(what, k.actual, PROP.defaultSet, TRIG.change | TRIG.time, rate));
       child(bin, dpd('Taakkaart', DDI.prescriptionControlState, PROP.defaultSet | PROP.settable, TRIG.change | TRIG.time));
-      child(bin, dpd('Totaal', k.total, PROP.defaultSet, TRIG.total, dvp(...k.totalUnit)));
+      if (k.total) child(bin, dpd('Totaal', k.total, PROP.defaultSet, TRIG.total, dvp(...k.totalUnit)));
       if (k.content) {
         const cu = dvp(...k.contentUnit);
         child(bin, dpd('Inhoud', k.content, PROP.defaultSet, TRIG.change | TRIG.time, cu));
@@ -193,7 +229,34 @@ export function buildDdop(implement) {
     patches.push({ offset: at(s.y) + 7, kind: 3, section: s.section });
   }
   const boomIndex = ddop.entries.findIndex((e) => e.obj === boom);
+
+  // process data table for the PLC (TC_Io.sys.pd): every DPD except "request default process data",
+  // with the role the koppel-FC gives it
+  const parentOf = new Map();
+  for (const o of objects) if (o.table === 'DET') for (const c of o.children) parentOf.set(c, o);
+  const prodByElement = new Map(products.map((x) => [x.element, x]));
+  const pd = [];
+  for (const o of objects) {
+    if (o.table !== 'DPD' || o.ddi === DDI.requestDefaultProcessData) continue;
+    const el = parentOf.get(o.id);
+    const r = { element: el.number, ddi: o.ddi, settable: !!(o.props & PROP.settable), designator: o.designator, role: '', index: 0 };
+    const prod = prodByElement.get(el.number);
+    if (el === main) r.role = { [DDI.actualWorkState]: 'actualWorkState', [DDI.effectiveTotalTime]: 'totalTime' }[o.ddi];
+    else if (el === boom) {
+      r.role = { [DDI.actualWorkingWidth]: 'workingWidth', [DDI.setpointWorkState]: 'setpointWorkState', [DDI.totalArea]: 'totalArea',
+        [DDI.sectionControlState]: 'sectionControlState' }[o.ddi];
+      if (o.ddi >= DDI.actualCondensedWorkState && o.ddi < DDI.actualCondensedWorkState + 16) { r.role = 'actualCondensed'; r.index = o.ddi - DDI.actualCondensedWorkState; }
+      if (o.ddi >= DDI.setpointCondensedWorkState && o.ddi < DDI.setpointCondensedWorkState + 16) { r.role = 'setpointCondensed'; r.index = o.ddi - DDI.setpointCondensedWorkState; }
+    } else if (prod) {
+      const k = kindOf(prod.kind);
+      r.index = prod.index;
+      r.role = { [k.setpoint]: 'setpoint', [k.actual]: 'actual', [DDI.prescriptionControlState]: 'prescription', [k.total]: 'total', [k.content]: 'content' }[o.ddi];
+    }
+    if (!r.role) throw new Error(`Geen rol voor DDI ${o.ddi} in element ${el.number}`);
+    pd.push(r);
+  }
   return {
+    pd,
     implement: m,
     objects,
     bytes: ddop.bytes,

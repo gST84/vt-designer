@@ -1,0 +1,103 @@
+// =====================================================================
+//  TC_Client – PLC-datatypes. Eerst importeren.
+//  Eigen namen (typeTcc…/typeTc…): los van vt_client, beide kunnen samen in een project.
+//  Versie 0.1 – 2026-11-25
+// =====================================================================
+
+TYPE "typeTccTxFrame"
+VERSION : 0.1
+   STRUCT
+      id : DWord;   // 29-bit CAN-identifier
+      data : Array[0..7] of Byte;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTccTxQueue"
+VERSION : 0.1
+   STRUCT
+      frame : Array[0..63] of "typeTccTxFrame";
+      head : Int;   // index van het volgende te verzenden frame
+      count : Int;   // aantal frames in de wachtrij
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTcPoolInfo"
+VERSION : 0.1
+   STRUCT
+      size : UDInt;   // bytes in TC_Pool.data (met het maximum aantal secties)
+      maxSections : USInt;
+      objCount : UInt;
+      nameOffset : UDInt;   // 8 bytes NAME
+      labelOffset : UDInt;   // 7 bytes structuurlabel, daarna 7 bytes taallabel
+      boomIndex : UInt;   // object van de boom
+      boomCountOffset : UDInt;   // UInt: aantal kinderen van de boom
+      boomFixedRefs : UInt;   // kinderen los van de secties; daarna 2 per groep van 16 secties
+      patchCount : UInt;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTcPd"
+VERSION : 0.1
+   STRUCT
+      element : UInt;   // elementnummer in de DDOP
+      ddi : UInt;   // data dictionary identifier (ISO 11783-11)
+      settable : Bool;   // de TC mag de waarde zetten
+      value : DInt;   // ruwe waarde
+      fromTc : Bool;   // de TC zette een nieuwe waarde (de koppel-FC neemt ze over)
+      timeInterval : UDInt;   // ms, 0 = uit (meetopdracht van de TC)
+      changeThreshold : DInt;   // 0 = uit (meetopdracht van de TC)
+      lastSent : DInt;
+      tSent : Time;
+      sent : Bool;   // al eens gestuurd sinds de meetopdracht
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTcCtrl"
+VERSION : 0.1
+   STRUCT
+      connected : Bool;   // beschrijving geactiveerd, procesdata lopen
+      tcVersion : USInt;   // versie van de TC
+      taskActive : Bool;   // de TC meldt een lopende taak
+      sectionCount : USInt;   // aantal secties in de gestuurde beschrijving
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTccDiag"
+VERSION : 0.1
+   STRUCT
+      stateText : String[40];   // leesbare toestand
+      tcSeen : Bool;   // statusbericht van de TC ontvangen
+      tcVersion : USInt;
+      tcOptions : Byte;   // bit 0 documentatie, 1 TC-GEO, 2 TC-GEO met positie, 3 peer control, 4 sectiebesturing
+      tcBooms : USInt;
+      tcSections : USInt;
+      tcChannels : USInt;
+      labelMatch : Bool;   // de TC had deze beschrijving al
+      poolBytes : UDInt;   // gestuurde beschrijving (zonder commandobyte)
+      etp : Bool;   // gestuurd met ETP (meer dan 1785 bytes)
+      transferError : Byte;   // antwoord op de overdracht (0 = OK)
+      activateErrors : Byte;   // antwoord op activeren (0 = OK)
+      faultyParent : UInt;
+      faultyObject : UInt;
+      poolErrors : Byte;
+      tpAbortReason : Byte;
+      valueCommands : UDInt;   // waarden gezet door de TC
+      requests : UDInt;   // waarden gevraagd door de TC
+      valuesSent : UDInt;   // waarden naar de TC gestuurd
+      unknownPd : UDInt;   // opdrachten voor een element/DDI dat niet in de tabel staat
+      lastUnknownElement : UInt;
+      lastUnknownDdi : UInt;
+      nacks : UDInt;   // NACK van de TC voor procesdata
+      filterStatus : Word;
+      rcvStatus : Word;
+      sendStatus : Word;
+      rxFrames : UDInt;
+      txFrames : UDInt;
+   END_STRUCT;
+
+END_TYPE

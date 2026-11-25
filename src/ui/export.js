@@ -9,15 +9,18 @@ import { tiaIoDb, tiaIoMap } from '../export/io.js';
 import { sanitizeName, label } from '../model.js';
 import { zip, utf8 } from '../zip.js';
 import { tiaTcPool, ddopBytes, ddopListing } from '../export/tcpool.js';
+import { tiaTcIo as tiaTcIoDb, tiaTcIoMap } from '../export/tcio.js';
 import { modal, toast } from './dialogs.js';
 
-/** The fixed PLC blocks for VT_Client, served from the same GitHub repository as this app. */
-const FB_DIR = 'isobus_project_bundle/vt_client/';
-const FB_FILES = ['01_VTC_Types.udt', '02_VT_Client.scl', 'README.md'];
-const FB_GITHUB = 'https://github.com/gST84/vt-designer/tree/main/isobus_project_bundle/vt_client';
+/** The fixed PLC blocks (VT_Client, TC_Client), served from the same GitHub repository as this app. */
+const BUNDLES = {
+  vt: { dir: 'isobus_project_bundle/vt_client/', files: ['01_VTC_Types.udt', '02_VT_Client.scl', 'README.md'], fb: 'VT_Client' },
+  tc: { dir: 'isobus_project_bundle/tc_client/', files: ['01_TCC_Types.udt', '02_TC_Client.scl', 'README.md'], fb: 'TC_Client' },
+};
+const FB_GITHUB = 'https://github.com/gST84/vt-designer/tree/main/isobus_project_bundle';
 
 const SECTIONS = [
-  { key: 'tia', label: 'TIA Portal', fields: ['tiaDb', 'ioDb', 'tcDb', 'chunk'] },
+  { key: 'tia', label: 'TIA Portal', fields: ['tiaDb', 'ioDb', 'tcDb', 'tcIoDb', 'chunk'] },
   { key: 'codesys', label: 'CODESYS', fields: ['codesysGvl', 'chunk'] },
   { key: 'general', label: 'Algemeen', fields: [] },
 ];
@@ -27,9 +30,17 @@ const tiaFiles = (p) => [
   { name: `${p.export.tiaDb}.db`, data: tiaSource(p) },
   { name: `${p.export.ioDb}.db`, data: tiaIoDb(p) },
   { name: `${p.export.ioDb}Map.scl`, data: tiaIoMap(p) },
-  ...(p.implement.enabled ? [{ name: `${p.export.tcDb}.db`, data: tiaTcPool(p) }] : []),
 ];
-const importOrder = (p) => `Importvolgorde in TIA Portal: 01_VTC_Types.udt → ${tiaFiles(p).map((f) => f.name).join(' → ')} → 02_VT_Client.scl`;
+const tcFiles = (p) => [
+  { name: `${p.export.tcDb}.db`, data: tiaTcPool(p) },
+  { name: `${p.export.tcIoDb}.db`, data: tiaTcIoDb(p) },
+  { name: `${p.export.tcIoDb}Map.scl`, data: tiaTcIoMap(p) },
+];
+const renamed = (f, name) => ({ ...f, name });
+const importOrder = (p) => [
+  `Importvolgorde in TIA Portal: 01_VTC_Types.udt → ${tiaFiles(p).map((f) => f.name).join(' → ')} → 02_VT_Client.scl`,
+  ...(p.implement.enabled ? [`Task controller: 01_TCC_Types.udt → ${tcFiles(p).map((f) => f.name).join(' → ')} → 02_TC_Client.scl`] : []),
+].join('\n');
 
 const TARGETS = [
   { key: 'tia', section: 'tia', label: 'Pool-DB', file: (p) => `${p.export.tiaDb}.db`, text: tiaSource,
@@ -39,13 +50,21 @@ const TARGETS = [
   { key: 'iomap', section: 'tia', label: 'Koppel-FC', file: (p) => `${p.export.ioDb}Map.scl`, text: tiaIoMap,
     hint: 'Elke cyclus aanroepen, na VT_Client en vóór je eigen logica. Hoort bij de interface-DB van dezelfde export: altijd samen opnieuw importeren.' },
   { key: 'tc', section: 'tia', label: 'TC-pool', file: (p) => `${p.export.tcDb}.db`, text: tiaTcPool, show: (p) => p.implement.enabled,
-    hint: 'De werktuigbeschrijving (DDOP) voor de task controller, met het maximum aantal secties. Voor FB TC_Client (volgt): die stuurt enkel de secties die de PLC gebruikt.' },
-  { key: 'fb', section: 'tia', label: "FB's van GitHub", file: () => 'VT_Client_FB.zip',
-    zip: (p, fb) => fb,
+    hint: 'De werktuigbeschrijving (DDOP) voor de task controller, met het maximum aantal secties. Aan TC_Client: info := "<DB>".info, pool := "<DB>".data en de tabellen obj…/patch…; die stuurt enkel de secties die de PLC gebruikt.' },
+  { key: 'tcio', section: 'tia', label: 'TC-interface', file: (p) => `${p.export.tcIoDb}.db`, text: (p) => tiaTcIoDb(p), show: (p) => p.implement.enabled,
+    hint: 'Voor FB TC_Client: par (secties, maten), in (van de TC), io (beide richtingen), out (naar de TC). Aan TC_Client: pd := "<DB>".sys.pd, ctrl := "<DB>".sys.ctrl, sectionWidth/X/Y := "<DB>".par.sectionWidth/X/Y.' },
+  { key: 'tciomap', section: 'tia', label: 'TC-koppel-FC', file: (p) => `${p.export.tcIoDb}Map.scl`, text: (p) => tiaTcIoMap(p), show: (p) => p.implement.enabled,
+    hint: 'Elke cyclus aanroepen, na TC_Client en vóór je eigen logica. Hoort bij TC_Pool en de TC-interface van dezelfde export.' },
+  { key: 'tcfb', section: 'tia', label: "TC-FB's van GitHub", file: () => 'TC_Client_FB.zip', bundle: 'tc', show: (p) => p.implement.enabled,
+    zip: (p, fb) => fb.tc,
+    hint: `FB TC_Client met zijn datatypes en de handleiding, uit ${FB_GITHUB}/tc_client (dezelfde versie als deze designer).` },
+  { key: 'fb', section: 'tia', label: "FB's van GitHub", file: () => 'VT_Client_FB.zip', bundle: 'vt',
+    zip: (p, fb) => fb.vt,
     hint: `FB VT_Client met zijn datatypes en de handleiding, uit ${FB_GITHUB} (dezelfde versie als deze designer). Opnieuw importeren na elke update van de designer.` },
   { key: 'all', section: 'tia', label: 'Alles', file: (p) => `${fileBase(p.name)}_TIA.zip`,
-    zip: (p, fb) => [fb[0], ...tiaFiles(p), fb[1], fb[2]],
-    hint: "Pool-DB, interface-DB, koppel-FC en de FB's van GitHub in één zip." },
+    zip: (p, fb) => [fb.vt[0], ...tiaFiles(p), fb.vt[1], renamed(fb.vt[2], 'README_VT_Client.md'),
+      ...(p.implement.enabled ? [fb.tc[0], ...tcFiles(p), fb.tc[1], renamed(fb.tc[2], 'README_TC_Client.md')] : [])],
+    hint: "Pool-DB, interface-DB, koppel-FC en de FB's van GitHub in één zip; met een werktuig ook alles voor TC_Client." },
   { key: 'gvl', section: 'codesys', label: 'GVL-tekst', file: (p) => `${p.export.codesysGvl}.st`, text: codesysGvl,
     hint: 'Application › Object toevoegen › Globale variabelenlijst met dezelfde naam, en de tekst als declaratie plakken.' },
   { key: 'xml', section: 'codesys', label: 'PLCopen XML', file: (p) => `${p.export.codesysGvl}.xml`, text: codesysXml,
@@ -69,10 +88,10 @@ const hexDump = (b) => {
   return lines.join('\n') + (b.length > 4096 ? `\n… (${b.length - 4096} bytes meer)` : '');
 };
 const size = (f) => (typeof f.data === 'string' ? utf8(f.data) : f.data).length;
-/** Version of FB VT_Client in the fetched 02_VT_Client.scl (its VERSION line), or ''. */
-const fbVersion = (fb) => {
-  const t = String.fromCharCode(...fb[1].data.slice(0, 20000));
-  return (t.match(/FUNCTION_BLOCK "VT_Client"[\s\S]*?VERSION : (\d+\.\d+)/) || [])[1] || '';
+/** Version of the FB in a fetched SCL file (the VERSION line after FUNCTION_BLOCK "<name>"), or ''. */
+const fbVersion = (file, name) => {
+  const t = Array.from(file.data.slice(0, 20000), (c) => String.fromCharCode(c)).join('');
+  return (t.match(new RegExp(`FUNCTION_BLOCK "${name}"[\\s\\S]*?VERSION : (\\d+\\.\\d+)`)) || [])[1] || '';
 };
 
 export async function exportDialog(store, initial = 'tia') {
@@ -90,11 +109,12 @@ export async function exportDialog(store, initial = 'tia') {
 
   async function fetchFb() {
     if (!fbFiles) {
-      fbFiles = await Promise.all(FB_FILES.map(async (name) => {
-        const r = await fetch(FB_DIR + name, { cache: 'no-cache' });
-        if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+      const get = (b) => Promise.all(b.files.map(async (name) => {
+        const r = await fetch(b.dir + name, { cache: 'no-cache' });
+        if (!r.ok) throw new Error(`${b.dir}${name}: HTTP ${r.status}`);
         return { name, data: new Uint8Array(await r.arrayBuffer()) };
       }));
+      fbFiles = { vt: await get(BUNDLES.vt), tc: p().implement.enabled ? await get(BUNDLES.tc) : [] };
     }
     return fbFiles;
   }
@@ -115,6 +135,7 @@ export async function exportDialog(store, initial = 'tia') {
     tiaDb: nameField('Naam pool-DB', 'tiaDb'),
     ioDb: nameField('Naam interface-DB', 'ioDb'),
     tcDb: nameField('Naam TC-pool', 'tcDb'),
+    tcIoDb: nameField('Naam TC-interface', 'tcIoDb'),
     codesysGvl: nameField('Naam GVL', 'codesysGvl'),
     chunk: h('label', { class: 'field' }, h('span', null, 'Max. bytes per deel (TP)'), chunk),
   };
@@ -133,7 +154,7 @@ export async function exportDialog(store, initial = 'tia') {
         h('b', null, t.label), h('small', null, t.file(p()))));
     }
     const show = SECTIONS.find((s) => s.key === sec).fields;
-    for (const [k, el] of Object.entries(fields)) el.style.display = show.includes(k) && (k !== 'tcDb' || p().implement.enabled) ? '' : 'none';
+    for (const [k, el] of Object.entries(fields)) el.style.display = show.includes(k) && ((k !== 'tcDb' && k !== 'tcIoDb') || p().implement.enabled) ? '' : 'none';
     opts.style.display = show.length ? '' : 'none';
 
     const v = validate(p());
@@ -157,9 +178,11 @@ export async function exportDialog(store, initial = 'tia') {
           let files;
           try { files = t.zip(p(), fb); } catch (e) { area.value = 'Export mislukt: ' + e.message; return; }
           content = zip(files);
-          const readme = new TextDecoder().decode(fb[2].data);
-          const v = fbVersion(fb);
-          area.value = [t.file(p()), ...files.map((f) => `  ${f.name.padEnd(28)} ${String(size(f)).padStart(7)} bytes${f === fb[1] && v ? `   FB VT_Client versie ${v}` : ''}`), '',
+          const set = fb[t.bundle || 'vt'];
+          const readme = new TextDecoder().decode(set[2].data);
+          const ver = (b) => fb[b][1] ? fbVersion(fb[b][1], BUNDLES[b].fb) : '';
+          const note = (f) => (f === fb.vt[1] ? ver('vt') : fb.tc[1] && f === fb.tc[1] ? ver('tc') : '');
+          area.value = [t.file(p()), ...files.map((f) => `  ${f.name.padEnd(28)} ${String(size(f)).padStart(7)} bytes${note(f) ? `   FB ${f === fb.vt[1] ? 'VT_Client' : 'TC_Client'} versie ${note(f)}` : ''}`), '',
             importOrder(p()), '', '— README.md —', '', readme].join('\n');
         }).catch((e) => {
           if (no !== loadNo) return;

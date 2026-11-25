@@ -1,10 +1,10 @@
 // Implement dialog: what the PLC tells the task controller about the implement (DDOP, ISO 11783-10).
 import { h } from '../util.js';
 import { modal } from './dialogs.js';
-import { buildDdop, normalizeImplement, PRODUCT_KINDS, CONNECTOR_TYPES, PRACTICES, MAX_SECTIONS } from '../tc/build.js';
+import { buildDdop, normalizeImplement, kindOf, KIND_CHOICES, PRODUCT_KINDS, CONNECTOR_TYPES, PRACTICES, MAX_SECTIONS } from '../tc/build.js';
 import { tcSummary } from '../export/tcpool.js';
 
-const KIND_OPTIONS = [...Object.entries(PRODUCT_KINDS).map(([k, v]) => [k, v.nl]), ['none', 'Geen dosis (alleen secties)']];
+const COMMON = Object.keys(PRODUCT_KINDS).length;
 
 export async function implementDialog(store) {
   const m = normalizeImplement(JSON.parse(JSON.stringify(store.project.implement)));
@@ -26,6 +26,14 @@ export async function implementDialog(store) {
     i.onchange = () => { const v = Math.max(min, Math.min(max, Math.round(Number(i.value) || 0))); i.value = v; onchange(v); refresh(); };
     return i;
   };
+  const kindSelect = (value, onchange) => {
+    const opt = ([v, t]) => h('option', { value: v, selected: v === value ? true : null }, t);
+    const s = h('select', null,
+      h('optgroup', { label: 'Gangbaar' }, KIND_CHOICES.slice(0, COMMON).map(opt), opt(['none', 'Geen instelwaarde (alleen secties)'])),
+      h('optgroup', { label: 'Alle instelwaarden uit de DDI-database (ISO 11783-11)' }, KIND_CHOICES.slice(COMMON).map(opt)));
+    s.onchange = () => { onchange(s.value); refresh(); };
+    return s;
+  };
   const field = (label, el, hint) => h('label', { class: 'field' }, h('span', null, label), el, hint ? h('small', null, hint) : null);
 
   const enabled = h('input', { type: 'checkbox', checked: m.enabled });
@@ -34,18 +42,18 @@ export async function implementDialog(store) {
   function products() {
     prodBox.innerHTML = '';
     m.products.forEach((pr, i) => {
-      const kind = PRODUCT_KINDS[pr.kind];
+      const kind = kindOf(pr.kind);
       prodBox.append(h('div', { class: 'product' },
-        h('b', null, `Product ${i + 1}`),
+        h('b', null, `Instelwaarde ${i + 1}`),
         h('div', { class: 'grid3' },
           field('Naam', text(pr.name, (v) => { pr.name = v; })),
-          field('Soort', select(KIND_OPTIONS, pr.kind, (v) => { pr.kind = v; products(); })),
+          field('Soort', kindSelect(pr.kind, (v) => { pr.kind = v; products(); })),
           field('Teeltpraktijk', select(PRACTICES, pr.practice, (v) => { pr.practice = Number(v); })),
           kind?.capacityNl ? field(`Max. inhoud (${kind.capacityNl})`, num(pr.capacity, 0, 2000000, (v) => { pr.capacity = v; })) : null,
-          kind ? h('p', { class: 'hint' }, `De TC stuurt de dosis in ${kind.rawNl}.`) : null),
-        h('button', { class: 'icon', title: 'Product weghalen', onclick: () => { m.products.splice(i, 1); products(); refresh(); } }, '✕')));
+          kind ? h('p', { class: 'hint' }, `De TC stuurt de waarde in ${kind.rawNl}.`) : null),
+        h('button', { class: 'icon', title: 'Weghalen', onclick: () => { m.products.splice(i, 1); products(); refresh(); } }, '✕')));
     });
-    prodBox.append(h('button', { onclick: () => { m.products.push({ name: `Product ${m.products.length + 1}`, kind: 'volume', capacity: 1000, practice: m.practice }); products(); refresh(); } }, '+ Product'));
+    prodBox.append(h('button', { onclick: () => { m.products.push({ name: `Product ${m.products.length + 1}`, kind: 'volume', capacity: 1000, practice: m.practice }); products(); refresh(); } }, '+ Instelwaarde'));
   }
 
   function refresh() {
@@ -53,7 +61,7 @@ export async function implementDialog(store) {
     const b = buildDdop(m);
     info.append(h('div', { class: b.errors.length ? 'error' : 'ok' }, tcSummary(b) + '.'));
     for (const e of b.errors.slice(0, 4)) info.append(h('div', { class: 'error' }, e.text));
-    if (b.bytes.length > 1785) info.append(h('div', { class: 'warn' }, `Meer dan 1785 bytes: de PLC moet de beschrijving met ETP sturen (komt in TC_Client).`));
+    if (b.bytes.length > 1785) info.append(h('div', { class: 'warn' }, `Meer dan 1785 bytes: TC_Client stuurt de beschrijving met ETP.`));
     if (!m.enabled) info.append(h('div', { class: 'hint' }, 'Uit: de export bevat geen TC-pool.'));
   }
 
@@ -61,7 +69,7 @@ export async function implementDialog(store) {
   refresh();
   const body = h('div', { class: 'form implement' },
     h('label', { class: 'check' }, enabled, 'Werktuig met task controller (TC-client, ISO 11783-10)'),
-    h('p', { class: 'hint' }, 'De terminal stuurt via zijn task controller secties en dosis volgens een taakkaart naar de PLC. Hier beschrijf je het werktuig; de PLC kiest tijdens het draaien hoeveel secties (tot het maximum) en hoe breed.'),
+    h('p', { class: 'hint' }, 'De terminal stuurt via zijn task controller secties en instelwaarden (dosis, diepte, hoogte) volgens een taakkaart naar de PLC. Hier beschrijf je het werktuig; de PLC kiest tijdens het draaien hoeveel secties (tot het maximum) en hoe breed.'),
     h('div', { class: 'grid3' },
       field('Naam', text(m.designator, (v) => { m.designator = v; })),
       field('Serienummer', text(m.serial, (v) => { m.serial = v; })),
@@ -72,7 +80,7 @@ export async function implementDialog(store) {
       field('Max. aantal secties', num(m.maxSections, 1, MAX_SECTIONS, (v) => { m.maxSections = v; }), `1 tot ${MAX_SECTIONS}; de PLC gebruikt er 1 tot dit aantal`),
       field('Standaard sectiebreedte (mm)', num(m.sectionWidth, 1, 100000, (v) => { m.sectionWidth = v; }), 'De PLC kan elke breedte aanpassen'),
       field('Taal (2 letters)', text(m.language, (v) => { m.language = v.toLowerCase(); }, 2), 'Voor de weergave op de terminal, bv. en, nl, de')),
-    h('h3', null, 'Producten'),
+    h('h3', null, 'Instelwaarden van de TC (dosis, diepte, hoogte)'),
     prodBox,
     info);
 

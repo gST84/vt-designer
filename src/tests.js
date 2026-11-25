@@ -13,8 +13,9 @@ import { ioPlan, tiaIoDb, tiaIoMap, inIo } from './export/io.js';
 import { zip, crc32, utf8 } from './zip.js';
 import { renderRoot } from './render.js';
 import { encodeObject as ddopObject, parseDdop, checkDdop } from './tc/ddop.js';
-import { buildDdop, poolForSections, sectionY, DDI } from './tc/build.js';
+import { buildDdop, poolForSections, sectionY, DDI, kindOf, KIND_CHOICES } from './tc/build.js';
 import { tiaTcPool, ddopListing } from './export/tcpool.js';
+import { tiaTcIo, tiaTcIoMap, realLit } from './export/tcio.js';
 import { APP_VERSION, sclText } from './export/common.js';
 
 /** The 119 bytes of vt_test_project/VT_TestPool.iop (from pool_listing.txt). */
@@ -316,6 +317,18 @@ export function runTests(log = (s) => console.log(s)) {
       po.filter((o) => o.table === 'DET' && o.type === 4).length === n && boomO.children.length === tb.boom.fixedRefs + 2 * Math.ceil(n / 16) && widths.length === n && widths.every((w) => w === 2500));
   }
 
+  const tdepth = buildDdop({ maxSections: 4, products: [{ name: 'Diepte', kind: 'tillageDepth' }, { name: 'Zaad', kind: 'count' }] });
+  const depthEl = tdepth.objects.find((o) => o.table === 'DET' && o.designator === 'Diepte');
+  check('TC-werktuig: diepte als functie-element met DDI 51/52', tdepth.errors.length === 0 && depthEl.type === 2 &&
+    tdepth.pd.some((r) => r.ddi === 51 && r.role === 'setpoint' && r.settable) && tdepth.pd.some((r) => r.ddi === 52 && r.role === 'actual'));
+  check('TC-werktuig: procesdatatabel met rollen', tdepth.pd.length > 0 && tdepth.pd.every((r) => r.role) &&
+    tdepth.pd.filter((r) => r.role === 'setpointCondensed').length === 1 && tdepth.pd.some((r) => r.role === 'sectionControlState' && r.settable));
+
+  const tg = buildDdop({ maxSections: 2, products: [{ name: 'Druk', kind: 'ddi:193' }, { name: 'Afstand', kind: 'ddi:16' }] });
+  check('TC-werktuig: elk DDI-paar uit de database bruikbaar', KIND_CHOICES.length > 60 && KIND_CHOICES.every(([k]) => kindOf(k)));
+  check('TC-werktuig: Product Pressure (DDI 193/194) in Pa met 1 decimaal', tg.errors.length === 0 && kindOf('ddi:193').rate.join() === 'Pa,0.1,1' &&
+    tg.pd.some((r) => r.ddi === 193 && r.role === 'setpoint') && tg.objects.some((o) => o.table === 'DET' && o.designator === 'Druk' && o.type === 2));
+
   const pt = newProject('TC');
   pt.implement.enabled = true;
   pt.implement.maxSections = 12;
@@ -326,6 +339,34 @@ export function runTests(log = (s) => console.log(s)) {
   check('TC-pool: titel met versie', /^TITLE = 'DDOP "Werktuig", max\. 12 secties - VT Designer /m.test(tcSrc));
   check('TC-listing: elk object een regel', ddopListing(pt).split('\n').filter((l) => /^\s*\d+\s+\d+\s+(DVC|DET|DPD|DPT|DVP)/.test(l)).length === tcB.entries.length);
   check('nieuw project: werktuig standaard uit', newProject().implement.enabled === false && Array.isArray(newProject().implement.products));
+
+  // 12b. TC_Io and TC_IoMap: the FC only uses declared fields, blocks balanced, one table row per process data
+  const tcPd = ['element', 'ddi', 'settable', 'value', 'fromTc', 'timeInterval', 'changeThreshold', 'lastSent', 'tSent', 'sent'];
+  const tcCtrl = ['connected', 'tcVersion', 'taskActive', 'sectionCount'];
+  for (const [nm, imp] of [['standaard', {}], ['20 secties, 3 instelwaarden', { maxSections: 20, products: [{ name: 'Water', kind: 'volume', capacity: 100 }, { name: 'Diepte', kind: 'tillageDepth' }, { name: 'Druk', kind: 'ddi:193' }] }], ['zonder instelwaarde', { products: [] }]]) {
+    const pj = newProject('TC'); Object.assign(pj.implement, imp, { enabled: true });
+    const tb2 = buildDdop(pj.implement);
+    const io = tiaTcIo(pj), map = tiaTcIoMap(pj);
+    const declared = new Set();
+    let section = null;
+    for (const line of io.split('\n')) {
+      const m = line.match(/^ {6}(\w+) : Struct/);
+      if (m) section = m[1];
+      const f = line.match(/^ {9}(\w+) :/);
+      if (f && section) declared.add(`${section}.${f[1]}`);
+    }
+    const used = [...map.matchAll(/"TC_Io"\.(\w+)(?:\[[^\]]*\])?\.(\w+)/g)].map((m) => `${m[1]}.${m[2]}`)
+      .filter((u) => !(u.startsWith('sys.pd') || u.startsWith('sys.ctrl')));
+    const pdFields = [...map.matchAll(/\.sys\.pd\[\d+\]\.(\w+)/g)].map((m) => m[1]);
+    const ctrlFields = [...map.matchAll(/\.sys\.ctrl\.(\w+)/g)].map((m) => m[1]);
+    const missing = [...used.filter((u) => !declared.has(u)), ...pdFields.filter((f) => !tcPd.includes(f)), ...ctrlFields.filter((f) => !tcCtrl.includes(f))];
+    check(`TC-interface ${nm}: koppel-FC gebruikt enkel velden uit de DB`, missing.length === 0, missing.join(', '));
+    const code = map.replace(/\/\/.*$/gm, '');
+    const bal = ['IF', 'FOR', 'REGION'].every((k) => (code.match(new RegExp(`\\b${k}\\b`, 'g')) || []).length === (code.match(new RegExp(`\\bEND_${k}\\b`, 'g')) || []).length);
+    check(`TC-interface ${nm}: IF/FOR/REGION in balans`, bal);
+    check(`TC-interface ${nm}: één tabelregel per procesdata`, (io.match(/sys\.pd\[\d+\]\.element := /g) || []).length === tb2.pd.length && io.includes(`pd : Array[0..${tb2.pd.length - 1}] of "typeTcPd";`));
+  }
+  check('REAL-literals voor SCL', realLit(10) === '10.0' && realLit(0.01) === '0.01' && realLit(0.0001) === '1.0E-4' && realLit(1e-7) === '1.0E-7');
 
   // 11. zip for the TIA download (stored files)
   check('CRC-32 van "hello"', crc32(utf8('hello')) === 0x3610a686);

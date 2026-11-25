@@ -7,7 +7,7 @@ export const APP = 'PLC VT Designer';
  * Version of the designer. It is shown in the app and written into every generated block (title,
  * comment, VERSION), so the PLC shows which export it holds. Raise it with every change of the app.
  */
-export const APP_VERSION = '1.2';
+export const APP_VERSION = '1.3';
 
 /** IEC 61131-3 / SCL words that cannot be used as names. */
 const RESERVED = new Set(`ABS ACOS ACTION ADD AND ANY ARRAY ASIN AT ATAN BEGIN BOOL BY BYTE CASE CHAR CONST CONSTANT COS DATE DINT DIV DO DT DWORD ELSE ELSIF END_ACTION
