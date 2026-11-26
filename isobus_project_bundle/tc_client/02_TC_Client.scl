@@ -7,19 +7,23 @@
 //      diepte of hoogte (TC-GEO), meetopdrachten (tijd, verandering);
 //    - naar de TC: werkelijke waarden op vraag en volgens de meetopdrachten.
 //  Werkt naast VT_Client met hetzelfde adres en dezelfde NAME; VT_Client claimt
-//  het adres. Eigen receive proxy en eigen transmit proxy.
+//  het adres. Zonder VT_Client (ownClaim = TRUE) claimt TC_Client het zelf.
+//  Eigen receive proxy en eigen transmit proxy.
 //
 //  Vereist: Siemens-bibliotheek LCan en 01_TCC_Types.udt.
+//  Versie 0.3 – 2026-11-26 – ownClaim: zonder VT_Client zelf het adres claimen (ISO 11783-5),
+//  Request for Address Claimed van de TC en van 0xFE beantwoorden, andere verzoeken aan ons
+//  met NACK, Cannot Claim als een toestel met voorrang ons adres claimt.
 //  Versie 0.2 – 2026-11-25 – tcAddress = 16#FF: TC zelf zoeken (adresclaims, functie 130);
 //  kortere foutteksten (max. 40 tekens).
 //  Versie 0.1 – 2026-11-25 – eerste versie.
 // =====================================================================
 
 FUNCTION "TCC_Elapsed" : Time
-TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - tc_client 0.2'
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - tc_client 0.3'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.2
-//tc_client versie 0.2 (2026-11-25)
+VERSION : 0.3
+//tc_client versie 0.3 (2026-11-26)
    VAR_INPUT
       since : Time;
       now : Time;
@@ -37,10 +41,10 @@ BEGIN
 END_FUNCTION
 
 FUNCTION "TCC_Push" : Bool
-TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - tc_client 0.2'
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - tc_client 0.3'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.2
-//tc_client versie 0.2 (2026-11-25)
+VERSION : 0.3
+//tc_client versie 0.3 (2026-11-26)
    VAR_INPUT
       id : DWord;
       data : Array[0..7] of Byte;
@@ -65,18 +69,20 @@ BEGIN
 END_FUNCTION
 
 FUNCTION_BLOCK "TC_Client"
-TITLE = 'ISOBUS task controller-client (ISO 11783-10) - versie 0.2'
+TITLE = 'ISOBUS task controller-client (ISO 11783-10) - versie 0.3'
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : 'Claude'
 FAMILY : ISOBUS
-VERSION : 0.2
-//tc_client versie 0.2 (2026-11-25)
-//Elke cyclus aanroepen, gevolgd door "TC_IoMap"(). enable aanzetten zodra VT_Client het adres
-//geclaimd heeft (VT_Client.running). Na een wijziging van TC_Io.par: enable uit en weer aan.
+VERSION : 0.3
+//tc_client versie 0.3 (2026-11-26)
+//Elke cyclus aanroepen, gevolgd door "TC_IoMap"(). Met VT_Client: enable aanzetten zodra VT_Client
+//het adres geclaimd heeft (VT_Client.running). Zonder VT_Client: ownClaim = TRUE, enable vrij.
+//Na een wijziging van TC_Io.par: enable uit en weer aan.
    VAR_INPUT
       enable : Bool;   // TRUE = verbinden met de TC, positieve flank = (her)start
       myAddress : Byte := 16#90;   // ons bronadres (zelfde als VT_Client)
       tcAddress : Byte := 16#FF;   // adres van de task controller; 16#FF = zelf zoeken (functie 130, anders 16#F7)
+      ownClaim : Bool := FALSE;   // TRUE = zonder VT_Client: zelf het adres claimen en Request for Address Claimed beantwoorden
       canStatus : Byte;   // statusbyte van de CM CAN
       hwIdCmCan : HW_IO;   // hardware-ID van de CM CAN (systeemconstante)
       rxProxyIndex : Byte := 4;   // nummer van de receive proxy voor TC-verkeer (niet die van VT_Client)
@@ -177,6 +183,18 @@ VERSION : 0.2
       tries : Int;
       rcvAll : Bool;
       rcvOn : Bool;
+      // eigen adresclaim (ownClaim, ISO 11783-5)
+      claimed : Bool;   // ons adres is geclaimd
+      claimReq : Bool;   // Request for Address Claimed ontvangen: Address Claimed opnieuw sturen
+      lostAddress : Bool;   // een toestel met voorrang claimt ons adres
+      nackReq : Bool;   // ander verzoek aan ons: NACK sturen
+      nackSa : Byte;
+      nackPgn : Array[0..2] of Byte;
+      rqCount : UDInt;   // ontvangen verzoeken (Request, PGN 0xEA00)
+      rqLastSa : Byte;   // bron van het laatste verzoek
+      claimsSent : UDInt;   // Address Claimed op verzoek gestuurd
+      nacksSent : UDInt;   // NACK op een verzoek gestuurd
+      lostToName : Array[0..7] of Byte;   // NAME van het toestel dat ons adres won
    END_VAR
 
    VAR_TEMP
@@ -258,12 +276,19 @@ BEGIN
 	        #nClaims := 0;
 	        #statusSa := 16#FF;
 	        #tries := 0;
+	        #claimed := FALSE;
+	        #claimReq := FALSE;
+	        #lostAddress := FALSE;
+	        #nackReq := FALSE;
 	        IF #tcAddress = 16#FF THEN   // zelf zoeken
 	            #tcUse := 16#FF;
 	            #st := 3;
 	        ELSE
 	            #tcUse := #tcAddress;
 	            #st := 1;
+	        END_IF;
+	        IF #ownClaim THEN   // zonder VT_Client: eerst zelf ons adres claimen
+	            #st := 6;
 	        END_IF;
 	        #q.head := 0;
 	        #q.count := 0;
@@ -275,6 +300,7 @@ BEGIN
 	        #ctrl.connected := FALSE;
 	    ELSIF NOT #enable THEN
 	        #st := 0;
+	        #claimed := FALSE;
 	        #q.count := 0;
 	        #tpState := 0;
 	        #statusOn := FALSE;
@@ -308,6 +334,15 @@ BEGIN
 	        #filters[10].messageId := 16#18E8FF00 OR BYTE_TO_DWORD(#tcUse);
 	        #filters[11].messageId := 16#18E80000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcUse);
 	        #n := 12;
+	        IF #ownClaim THEN
+	            // Request (PGN 0xEA00) van de TC aan iedereen en aan ons, en van een toestel zonder adres (0xFE)
+	            #filters[12].messageId := 16#18EAFF00 OR BYTE_TO_DWORD(#tcUse);
+	            #filters[13].messageId := 16#18EA0000 OR SHL(IN := BYTE_TO_DWORD(#myAddress), N := 8) OR BYTE_TO_DWORD(#tcUse);
+	            #filters[14].messageId := 16#18EAFFFE;
+	            // Address Claimed van een ander toestel op ons adres
+	            #filters[15].messageId := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress);
+	            #n := 16;
+	        END_IF;
 	        // oplopend sorteren
 	        FOR #i := 1 TO #n - 1 DO
 	            FOR #j := #i TO 1 BY -1 DO
@@ -349,8 +384,9 @@ BEGIN
 	END_REGION
 
 	REGION Ontvangen (één frame per handshake)
-	    // tijdens het zoeken (toestand 3-4) alles ontvangen; in 1-2 uit, zodat de FB opnieuw start met filters
-	    #rcvAll := #st = 3 OR #st = 4;
+	    // tijdens het claimen en zoeken (toestand 6-7 en 3-4) alles ontvangen; in 1-2 uit, zodat de FB opnieuw
+	    // start met filters
+	    #rcvAll := #st = 3 OR #st = 4 OR #st = 6 OR #st = 7;
 	    #rcvOn := #st >= 5 OR #rcvAll;
 	    #rcv(enable := #rcvOn,
 	         canModulStatusByte := #canStatus,
@@ -459,6 +495,43 @@ BEGIN
 	                    #tpState := 0;
 	                    #statusOn := FALSE;
 	                    #ctrl.connected := FALSE;
+	                END_IF;
+	            END_IF;
+	        END_IF;
+
+	        // ---- eigen adresclaim (ownClaim): verzoeken en tegenclaims (ISO 11783-5 en -3)
+	        IF #ownClaim AND #st <> 0 THEN
+	            IF #pf = 16#EA AND (#ps = 16#FF OR (#ps = #myAddress AND #claimed)) THEN
+	                #rqCount := #rqCount + 1;
+	                #rqLastSa := #sa;
+	                IF #rxData[0] = 16#00 AND #rxData[1] = 16#EE AND #rxData[2] = 16#00 THEN
+	                    #claimReq := TRUE;   // Request for Address Claimed
+	                ELSIF #ps = #myAddress THEN   // iets anders aan ons gevraagd: niet ondersteund
+	                    #nackSa := #sa;
+	                    #nackPgn[0] := #rxData[0];
+	                    #nackPgn[1] := #rxData[1];
+	                    #nackPgn[2] := #rxData[2];
+	                    #nackReq := TRUE;
+	                END_IF;
+	            ELSIF #pf = 16#EE AND #ps = 16#FF AND #sa = #myAddress AND #claimed THEN
+	                // een ander toestel claimt ons adres: de laagste NAME wint (byte 7 weegt het zwaarst)
+	                #c1 := 0;
+	                FOR #i := 7 TO 0 BY -1 DO
+	                    IF #c1 = 0 THEN
+	                        IF BYTE_TO_USINT(#isoName[#i]) < BYTE_TO_USINT(#rxData[#i]) THEN
+	                            #c1 := -1;
+	                        ELSIF BYTE_TO_USINT(#isoName[#i]) > BYTE_TO_USINT(#rxData[#i]) THEN
+	                            #c1 := 1;
+	                        END_IF;
+	                    END_IF;
+	                END_FOR;
+	                IF #c1 < 0 THEN   // wij hebben voorrang: onze claim opnieuw sturen
+	                    #claimReq := TRUE;
+	                ELSIF #c1 > 0 THEN   // zij hebben voorrang: adres opgeven
+	                    #lostAddress := TRUE;
+	                    FOR #i := 0 TO 7 DO
+	                        #lostToName[#i] := #rxData[#i];
+	                    END_FOR;
 	                END_IF;
 	            END_IF;
 	        END_IF;
@@ -647,6 +720,23 @@ BEGIN
 	            IF "TCC_Elapsed"(since := #tState, now := #now) >= #startupDelay AND #diag.tcSeen
 	                AND "TCC_Elapsed"(since := #tTcStatus, now := #now) < T#3S THEN
 	                #st := 10;
+	            END_IF;
+
+	        6:  // ownClaim: ons adres claimen (Address Claimed, PGN 0xEE00, aan iedereen)
+	            IF "TCC_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q) THEN
+	                #claimed := TRUE;
+	                #claimReq := FALSE;
+	                #tState := #now;
+	                #st := 7;
+	            END_IF;
+
+	        7:  // 250 ms wachten op een tegenclaim voor we verder zenden (adres 128-247)
+	            IF "TCC_Elapsed"(since := #tState, now := #now) >= T#250MS THEN
+	                IF #tcAddress = 16#FF THEN
+	                    #st := 3;
+	                ELSE
+	                    #st := 1;
+	                END_IF;
 	            END_IF;
 
 	        10:  // Working Set Master en eerste statusbericht
@@ -1057,6 +1147,50 @@ BEGIN
 	    END_IF;
 	END_REGION
 
+	REGION Eigen adresclaim: verzoeken beantwoorden (ownClaim, ISO 11783-5 en -3)
+	    IF #ownClaim AND #st <> 0 THEN
+	        IF #lostAddress AND #st < 900 THEN
+	            // adres verloren: wachtrij leegmaken (een frame dat onderweg is blijft vooraan), Cannot Claim
+	            // sturen vanaf 0xFE en stoppen
+	            IF #txState = 1 THEN
+	                #q.count := 1;
+	            ELSE
+	                #q.count := 0;
+	            END_IF;
+	            #tpState := 0;
+	            #statusOn := FALSE;
+	            #ok := "TCC_Push"(id := 16#18EEFFFE, data := #isoName, q := #q);
+	            #claimed := FALSE;
+	            #claimReq := FALSE;
+	            #nackReq := FALSE;
+	            #st := 909;
+	        ELSIF #claimed AND #st < 900 THEN
+	            IF #claimReq THEN   // Address Claimed aan iedereen
+	                IF "TCC_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q) THEN
+	                    #claimReq := FALSE;
+	                    #claimsSent := #claimsSent + 1;
+	                END_IF;
+	            END_IF;
+	            IF #nackReq THEN   // Acknowledgement (PGN 0xE800) aan iedereen: NACK voor de gevraagde PGN
+	                #d := #ff8;
+	                #d[0] := 16#01;
+	                #d[4] := #nackSa;
+	                #d[5] := #nackPgn[0];
+	                #d[6] := #nackPgn[1];
+	                #d[7] := #nackPgn[2];
+	                IF "TCC_Push"(id := 16#18E8FF00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q) THEN
+	                    #nackReq := FALSE;
+	                    #nacksSent := #nacksSent + 1;
+	                END_IF;
+	            END_IF;
+	        ELSIF #st = 909 AND #claimReq THEN   // na verlies: op een verzoek aan iedereen antwoorden met Cannot Claim
+	            IF "TCC_Push"(id := 16#18EEFFFE, data := #isoName, q := #q) THEN
+	                #claimReq := FALSE;
+	            END_IF;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
 	REGION Transport protocol – zender (TP en ETP)
 	    CASE #tpState OF
 	        1:  // TP: Request To Send
@@ -1209,6 +1343,7 @@ BEGIN
 	        0: #diag.stateText := 'uit';
 	        1, 2: #diag.stateText := 'ontvangstfilter instellen';
 	        3, 4: #diag.stateText := 'TC zoeken';
+	        6, 7: #diag.stateText := 'adres claimen';
 	        5: #diag.stateText := 'wacht op de TC (opstarttijd)';
 	        10: #diag.stateText := 'aanmelden';
 	        20, 21, 22: #diag.stateText := 'versie uitwisselen';
@@ -1227,6 +1362,7 @@ BEGIN
 	        906: #diag.stateText := 'fout: TC weigert beschrijving';
 	        907: #diag.stateText := 'fout: geen antwoord van de TC';
 	        908: #diag.stateText := 'fout: activeren geweigerd';
+	        909: #diag.stateText := 'fout: adres verloren (Cannot Claim)';
 	        ELSE
 	            #diag.stateText := '';
 	    END_CASE;

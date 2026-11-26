@@ -37,6 +37,7 @@ Na een wijziging van het werktuig in de designer: de drie geëxporteerde bestand
 "TC_Client_DB"(enable       := "VT_Client_DB".running,   // adres geclaimd door VT_Client
                myAddress    := 16#90,
                tcAddress    := 16#FF,                    // zelf zoeken (functie 130), of vast bv. 16#F7
+               ownClaim     := FALSE,                    // TRUE zonder VT_Client, zie hieronder
                canStatus    := "PLC_1.CM CAN_1.CAN transparent.Status",
                hwIdCmCan    := <systeemconstante CM CAN>,
                rxProxyIndex := 4,
@@ -70,6 +71,19 @@ END_FOR;
 ```
 
 Gebruik dezelfde NAME-ingangen als bij `VT_Client` (standaard zijn ze gelijk).
+
+### Zonder VT_Client
+
+Een TC zonder VT (bv. een task controller op een robot) negeert berichten van een adres dat nooit geclaimd werd.
+Draait er geen `VT_Client`, zet dan `ownClaim := TRUE` en koppel `enable` niet aan `"VT_Client_DB".running`.
+`TC_Client` (vanaf 0.3) doet dan zelf het adresbeheer (ISO 11783-5):
+
+- bij het starten Address Claimed sturen met de NAME en 250 ms wachten;
+- Request for Address Claimed van de TC en van 0xFE beantwoorden, andere verzoeken aan ons met een NACK;
+- claimt een toestel met voorrang (lagere NAME) ons adres: Cannot Claim sturen en stoppen (909).
+
+Nooit `ownClaim := TRUE` samen met een draaiende `VT_Client`: dan beheren twee blokken hetzelfde adres. De
+filterlijst groeit naar 16 identifiers; neemt de CM CAN die niet over, het station even spanningsloos maken.
 
 ## Wat er gebeurt
 
