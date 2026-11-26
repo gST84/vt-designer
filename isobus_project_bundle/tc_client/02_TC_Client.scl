@@ -11,6 +11,9 @@
 //  Eigen receive proxy en eigen transmit proxy.
 //
 //  Vereist: Siemens-bibliotheek LCan en 01_TCC_Types.udt.
+//  Versie 0.4 – 2026-11-26 – overdracht van de beschrijving: End of Message Ack (TP en ETP) enkel na alle
+//  pakketten en met de juiste lengte, CTS buiten het bericht genegeerd, ontvangstbuffer leeg bij het
+//  starten en vóór de overdracht, zend-time-out van 1 s.
 //  Versie 0.3 – 2026-11-26 – ownClaim: zonder VT_Client zelf het adres claimen (ISO 11783-5),
 //  Request for Address Claimed van de TC en van 0xFE beantwoorden, andere verzoeken aan ons
 //  met NACK, Cannot Claim als een toestel met voorrang ons adres claimt.
@@ -20,10 +23,10 @@
 // =====================================================================
 
 FUNCTION "TCC_Elapsed" : Time
-TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - tc_client 0.3'
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - tc_client 0.4'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.3
-//tc_client versie 0.3 (2026-11-26)
+VERSION : 0.4
+//tc_client versie 0.4 (2026-11-26)
    VAR_INPUT
       since : Time;
       now : Time;
@@ -41,10 +44,10 @@ BEGIN
 END_FUNCTION
 
 FUNCTION "TCC_Push" : Bool
-TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - tc_client 0.3'
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - tc_client 0.4'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.3
-//tc_client versie 0.3 (2026-11-26)
+VERSION : 0.4
+//tc_client versie 0.4 (2026-11-26)
    VAR_INPUT
       id : DWord;
       data : Array[0..7] of Byte;
@@ -69,12 +72,12 @@ BEGIN
 END_FUNCTION
 
 FUNCTION_BLOCK "TC_Client"
-TITLE = 'ISOBUS task controller-client (ISO 11783-10) - versie 0.3'
+TITLE = 'ISOBUS task controller-client (ISO 11783-10) - versie 0.4'
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : 'Claude'
 FAMILY : ISOBUS
-VERSION : 0.3
-//tc_client versie 0.3 (2026-11-26)
+VERSION : 0.4
+//tc_client versie 0.4 (2026-11-26)
 //Elke cyclus aanroepen, gevolgd door "TC_IoMap"(). Met VT_Client: enable aanzetten zodra VT_Client
 //het adres geclaimd heeft (VT_Client.running). Zonder VT_Client: ownClaim = TRUE, enable vrij.
 //Na een wijziging van TC_Io.par: enable uit en weer aan.
@@ -173,6 +176,10 @@ VERSION : 0.3
       tpEnd : DInt;   // laatste pakket van het venster
       tpOffset : DInt;   // ETP: data packet offset van het venster
       tTp : Time;
+      tTx : Time;   // frame aan de transmit proxy gegeven
+      rxClear : Bool;   // één aanroep TRUE: ontvangstbuffer van de proxy leegmaken
+      staleAcks : UDInt;   // End of Message Ack genegeerd (oud of niet voor dit bericht)
+      sendTimeouts : UDInt;   // frame na 1 s zonder done/error opgegeven
       // zoeken naar de TC
       tcUse : Byte;   // gebruikt TC-adres (tcAddress of gevonden)
       claimSa : Array[0..15] of Byte;
@@ -373,6 +380,7 @@ BEGIN
 	    IF #st = 2 THEN
 	        IF #setFilter.done THEN
 	            #filterExec := FALSE;
+	            #rxClear := TRUE;   // oude berichten uit de buffer
 	            #st := 5;
 	            #tState := #now;
 	        ELSIF #setFilter.error OR "TCC_Elapsed"(since := #tState, now := #now) > T#5S THEN
@@ -392,12 +400,13 @@ BEGIN
 	         canModulStatusByte := #canStatus,
 	         deviceType := FALSE,
 	         ignoreRcvFilterSetting := #rcvAll,
-	         resetRcvMsgBuffer := FALSE,
+	         resetRcvMsgBuffer := #rxClear,
 	         ackMessage := #rxAck,
 	         inputArea := #rxProxyIn,
 	         outputArea := #rxProxyOut,
 	         messageData := #rxData);
 	    #diag.rcvStatus := #rcv.status;
+	    #rxClear := FALSE;   // flank: één aanroep is genoeg
 
 	    #rxAck := #rcv.valid AND NOT #rxAck;
 
@@ -446,7 +455,7 @@ BEGIN
 	            IF #rxData[5] = 16#00 AND #rxData[6] = 16#CB AND #rxData[7] = 16#00 THEN
 	                IF #rxData[0] = 16#11 AND (#tpState = 2 OR #tpState = 3) THEN   // CTS
 	                    #n := BYTE_TO_DINT(#rxData[1]);
-	                    IF #n > 0 THEN
+	                    IF #n > 0 AND BYTE_TO_DINT(#rxData[2]) >= 1 AND BYTE_TO_DINT(#rxData[2]) <= #tpPackets THEN
 	                        #tpNext := BYTE_TO_DINT(#rxData[2]);
 	                        #tpEnd := #tpNext + #n - 1;
 	                        IF #tpEnd > #tpPackets THEN
@@ -456,7 +465,14 @@ BEGIN
 	                    END_IF;
 	                    #tTp := #now;
 	                ELSIF #rxData[0] = 16#13 AND #tpState >= 2 AND #tpState <= 3 THEN   // End of Message Ack
-	                    #tpState := 5;
+	                    // enkel als alle pakketten weg zijn en lengte en aantal kloppen (geen oude bevestiging)
+	                    IF #tpNext > #tpPackets AND #rxData[1] = DINT_TO_BYTE(#txLen)
+	                        AND #rxData[2] = DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen), N := 8))
+	                        AND #rxData[3] = DINT_TO_BYTE(#tpPackets) THEN
+	                        #tpState := 5;
+	                    ELSE
+	                        #staleAcks := #staleAcks + 1;
+	                    END_IF;
 	                ELSIF #rxData[0] = 16#FF AND #tpState >= 1 AND #tpState <= 3 THEN   // Abort
 	                    #diag.tpAbortReason := #rxData[1];
 	                    #tpState := 9;
@@ -468,8 +484,9 @@ BEGIN
 	            IF #rxData[5] = 16#00 AND #rxData[6] = 16#CB AND #rxData[7] = 16#00 THEN
 	                IF #rxData[0] = 16#15 AND #tpState >= 12 AND #tpState <= 14 THEN   // CTS
 	                    #n := BYTE_TO_DINT(#rxData[1]);
-	                    IF #n > 0 THEN
-	                        #tpNext := BYTE_TO_DINT(#rxData[2]) + BYTE_TO_DINT(#rxData[3]) * 256 + BYTE_TO_DINT(#rxData[4]) * 65536;
+	                    #x := BYTE_TO_DINT(#rxData[2]) + BYTE_TO_DINT(#rxData[3]) * 256 + BYTE_TO_DINT(#rxData[4]) * 65536;
+	                    IF #n > 0 AND #x >= 1 AND #x <= #tpPackets THEN
+	                        #tpNext := #x;
 	                        #tpEnd := #tpNext + #n - 1;
 	                        IF #tpEnd > #tpPackets THEN
 	                            #tpEnd := #tpPackets;
@@ -478,7 +495,14 @@ BEGIN
 	                    END_IF;
 	                    #tTp := #now;
 	                ELSIF #rxData[0] = 16#17 AND #tpState >= 12 AND #tpState <= 14 THEN   // End of Message Ack
-	                    #tpState := 5;
+	                    // enkel als alle pakketten weg zijn en het aantal bytes klopt (geen oude bevestiging)
+	                    IF #tpNext > #tpPackets AND #rxData[1] = DINT_TO_BYTE(#txLen)
+	                        AND #rxData[2] = DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen), N := 8))
+	                        AND #rxData[3] = DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#txLen), N := 16)) THEN
+	                        #tpState := 5;
+	                    ELSE
+	                        #staleAcks := #staleAcks + 1;
+	                    END_IF;
 	                ELSIF #rxData[0] = 16#FF AND #tpState >= 11 AND #tpState <= 14 THEN   // Abort
 	                    #diag.tpAbortReason := #rxData[1];
 	                    #tpState := 9;
@@ -740,6 +764,7 @@ BEGIN
 	            END_IF;
 
 	        10:  // Working Set Master en eerste statusbericht
+	            #rxClear := TRUE;   // geen oude berichten van een vorige aanmelding
 	            #d := #ff8;
 	            #d[0] := 16#01;   // 1 lid in de werkset
 	            #ok := "TCC_Push"(id := 16#1CFE0D00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q);
@@ -950,6 +975,7 @@ BEGIN
 	            END_IF;
 
 	        40:  // mag de beschrijving gestuurd worden? (grootte zonder de commandobyte)
+	            #rxClear := TRUE;   // geen oude TP-berichten van een vorige overdracht
 	            #d := #ff8;
 	            #d[0] := 16#41;
 	            #d[1] := DINT_TO_BYTE(#txLen - 1);
@@ -976,6 +1002,8 @@ BEGIN
 	        42:  // beschrijving sturen: TP tot 1785 bytes, anders ETP
 	            IF #tpState = 0 THEN
 	                #tpPackets := (#txLen + 6) / 7;
+	                #tpNext := 1;   // nog niets gestuurd
+	                #tpEnd := 0;
 	                IF #txLen <= 1785 THEN
 	                    #tpState := 1;
 	                ELSE
@@ -1299,6 +1327,7 @@ BEGIN
 	                #txId := #q.frame[#q.head].id;
 	                #txData := #q.frame[#q.head].data;
 	                #txExec := TRUE;
+	                #tTx := #now;
 	                #txState := 1;
 	            END_IF;
 	        1:
@@ -1308,6 +1337,12 @@ BEGIN
 	                ELSE
 	                    #diag.txFrames := #diag.txFrames + 1;
 	                END_IF;
+	                #q.head := (#q.head + 1) MOD 64;
+	                #q.count := #q.count - 1;
+	                #txExec := FALSE;
+	                #txState := 2;
+	            ELSIF "TCC_Elapsed"(since := #tTx, now := #now) > T#1S THEN   // proxy antwoordt niet: frame opgeven
+	                #sendTimeouts := #sendTimeouts + 1;
 	                #q.head := (#q.head + 1) MOD 64;
 	                #q.count := #q.count - 1;
 	                #txExec := FALSE;

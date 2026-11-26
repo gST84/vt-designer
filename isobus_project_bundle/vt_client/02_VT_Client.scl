@@ -10,6 +10,9 @@
 //
 //  Vereist: Siemens-bibliotheek LCan en 01_VTC_Types.udt.
 //  Staat los van vt_test_project (eigen namen VTC_…/typeVtc…).
+//  Versie 0.6 – 2026-11-26 – pool-overdracht: End of Message Ack enkel aanvaarden na alle pakketten en
+//  met de juiste lengte (oude bevestigingen sloten anders delen af zonder data), CTS buiten het bericht
+//  genegeerd, ontvangstbuffer leeg bij het starten en vóór de pool, zend-time-out van 1 s.
 //  Versie 0.5 – 2026-11-25 – vtAddress = 16#FF: VT zelf zoeken (adresclaims, functie 29); verzoeken van de
 //  andere functies van dezelfde terminal automatisch beantwoorden (otherAddress = 16#FF).
 //  Versie 0.4 – 2026-11-25 – versie in titel, commentaar en VERSION van elk blok (te controleren in TIA).
@@ -21,10 +24,10 @@
 // =====================================================================
 
 FUNCTION "VTC_Elapsed" : Time
-TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - vt_client 0.5'
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - vt_client 0.6'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.5
-//vt_client versie 0.5 (2026-11-25)
+VERSION : 0.6
+//vt_client versie 0.6 (2026-11-26)
    VAR_INPUT
       since : Time;
       now : Time;
@@ -42,10 +45,10 @@ BEGIN
 END_FUNCTION
 
 FUNCTION "VTC_Push" : Bool
-TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - vt_client 0.5'
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - vt_client 0.6'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.5
-//vt_client versie 0.5 (2026-11-25)
+VERSION : 0.6
+//vt_client versie 0.6 (2026-11-26)
    VAR_INPUT
       id : DWord;
       data : Array[0..7] of Byte;
@@ -70,12 +73,12 @@ BEGIN
 END_FUNCTION
 
 FUNCTION_BLOCK "VT_Client"
-TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io) - versie 0.5'
+TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io) - versie 0.6'
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : 'Claude'
 FAMILY : ISOBUS
-VERSION : 0.5
-//vt_client versie 0.5 (2026-11-25)
+VERSION : 0.6
+//vt_client versie 0.6 (2026-11-26)
 //Elke cyclus aanroepen, gevolgd door "VT_IoMap"(). enable = TRUE start: filter zetten,
 //address claim, wachten op de VT, pool uploaden. Daarna running = TRUE en volgt het scherm "VT_Io".
    VAR_INPUT
@@ -165,6 +168,10 @@ VERSION : 0.5
       tMaint : Time;
       tVtStatus : Time;
       tTp : Time;
+      tTx : Time;   // frame aan de transmit proxy gegeven
+      rxClear : Bool;   // één aanroep TRUE: ontvangstbuffer van de proxy leegmaken
+      staleAcks : UDInt;   // End of Message Ack genegeerd (oud of niet voor dit bericht)
+      sendTimeouts : UDInt;   // frame na 1 s zonder done/error opgegeven
       edgeEnable : Bool;
       memResp : Bool;
       hwResp : Bool;
@@ -349,6 +356,7 @@ BEGIN
 	    IF #st = 2 THEN
 	        IF #setFilter.done THEN
 	            #filterExec := FALSE;
+	            #rxClear := TRUE;   // oude berichten uit de buffer
 	            #st := 10;
 	        ELSIF #setFilter.error OR "VTC_Elapsed"(since := #tState, now := #now) > T#5S THEN
 	            #diag.filterStatus := #setFilter.status;
@@ -366,12 +374,13 @@ BEGIN
 	         canModulStatusByte := #canStatus,
 	         deviceType := FALSE,
 	         ignoreRcvFilterSetting := #rcvAll,
-	         resetRcvMsgBuffer := FALSE,
+	         resetRcvMsgBuffer := #rxClear,
 	         ackMessage := #rxAck,
 	         inputArea := #rxProxyIn,
 	         outputArea := #rxProxyOut,
 	         messageData := #rxData);
 	    #diag.rcvStatus := #rcv.status;
+	    #rxClear := FALSE;   // flank: één aanroep is genoeg
 
 	    #rxAck := #rcv.valid AND NOT #rxAck;
 
@@ -424,7 +433,7 @@ BEGIN
 	                // over ons bericht naar de VT
 	                IF #rxData[0] = 16#11 AND (#tpState = 2 OR #tpState = 3) THEN   // CTS
 	                    #n := BYTE_TO_INT(#rxData[1]);
-	                    IF #n > 0 THEN
+	                    IF #n > 0 AND BYTE_TO_INT(#rxData[2]) >= 1 AND BYTE_TO_INT(#rxData[2]) <= #tpPackets THEN
 	                        #tpNext := BYTE_TO_INT(#rxData[2]);
 	                        #tpEnd := #tpNext + #n - 1;
 	                        IF #tpEnd > #tpPackets THEN
@@ -434,7 +443,15 @@ BEGIN
 	                    END_IF;
 	                    #tTp := #now;   // ook bij CTS met 0 pakketten (VT vraagt wachten)
 	                ELSIF #rxData[0] = 16#13 AND #tpState >= 2 AND #tpState <= 3 THEN   // End of Message Ack
-	                    #tpState := 5;
+	                    // enkel als alle pakketten weg zijn en lengte en aantal kloppen: een oude bevestiging
+	                    // (bv. van vóór een herstart) mag een deel niet afsluiten zonder data
+	                    IF #tpNext > #tpPackets AND #rxData[1] = WORD_TO_BYTE(UINT_TO_WORD(#tpLen))
+	                        AND #rxData[2] = WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#tpLen), N := 8))
+	                        AND #rxData[3] = INT_TO_BYTE(#tpPackets) THEN
+	                        #tpState := 5;
+	                    ELSE
+	                        #staleAcks := #staleAcks + 1;
+	                    END_IF;
 	                ELSIF #rxData[0] = 16#FF AND #tpState >= 1 AND #tpState <= 3 THEN   // Abort
 	                    #diag.tpAbortReason := #rxData[1];
 	                    #tpState := 9;
@@ -765,6 +782,7 @@ BEGIN
 	            END_IF;
 
 	        30:  // Working Set Master + eerste Maintenance + Get Memory
+	            #rxClear := TRUE;   // geen oude TP-berichten van een vorige overdracht
 	            #d := #ff8;
 	            #d[0] := 16#01;   // 1 lid in de werkset
 	            #ok := "VTC_Push"(id := 16#1CFE0D00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q);
@@ -1040,6 +1058,8 @@ BEGIN
 	    CASE #tpState OF
 	        1:  // Request To Send
 	            #tpPackets := (UINT_TO_INT(#tpLen) + 6) / 7;
+	            #tpNext := 1;   // nog niets gestuurd
+	            #tpEnd := 0;
 	            #d[0] := 16#10;
 	            #d[1] := WORD_TO_BYTE(UINT_TO_WORD(#tpLen));
 	            #d[2] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#tpLen), N := 8));
@@ -1129,6 +1149,7 @@ BEGIN
 	                #txId := #q.frame[#q.head].id;
 	                #txData := #q.frame[#q.head].data;
 	                #txExec := TRUE;
+	                #tTx := #now;
 	                #txState := 1;
 	            END_IF;
 	        1:
@@ -1138,6 +1159,12 @@ BEGIN
 	                ELSE
 	                    #diag.txFrames := #diag.txFrames + 1;
 	                END_IF;
+	                #q.head := (#q.head + 1) MOD 32;
+	                #q.count := #q.count - 1;
+	                #txExec := FALSE;
+	                #txState := 2;
+	            ELSIF "VTC_Elapsed"(since := #tTx, now := #now) > T#1S THEN   // proxy antwoordt niet: frame opgeven
+	                #sendTimeouts := #sendTimeouts + 1;
 	                #q.head := (#q.head + 1) MOD 32;
 	                #q.count := #q.count - 1;
 	                #txExec := FALSE;
