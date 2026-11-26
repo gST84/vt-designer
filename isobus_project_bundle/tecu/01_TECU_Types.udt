@@ -1,0 +1,206 @@
+// =====================================================================
+//  ISO_TractorEcu – PLC-datatypes. Na tia_isobus_decoder/01_ISO_Types.udt (typeIsoTractor)
+//  en vóór 02_ISO_TractorEcu.scl importeren.
+//  Versie 0.1 – 2026-11-26 – eerste versie.
+// =====================================================================
+
+TYPE "typeTecTxFrame"
+VERSION : 0.1
+   STRUCT
+      id : DWord;   // 29-bit CAN-identifier
+      data : Array[0..7] of Byte;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecTxQueue"
+VERSION : 0.1
+   STRUCT
+      frame : Array[0..63] of "typeTecTxFrame";
+      head : Int;   // index van het volgende te verzenden frame
+      count : Int;   // aantal frames in de wachtrij
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuConfig"
+VERSION : 0.1
+   STRUCT
+      tecuClass : USInt := 1;   // klasse van de tractor: 1, 2 of 3 (3 = opdrachten van werktuigen mogelijk)
+      addendumF : Bool;   // voorhef en voorste aftakas (front)
+      addendumN : Bool;   // navigatie (positie)
+      // welke berichten (de waarden komen uit tractor : "typeIsoTractor")
+      sendEngine : Bool := TRUE;   // PGN 61444 EEC1
+      sendWheelSpeed : Bool := TRUE;   // PGN 65096
+      sendGroundSpeed : Bool := TRUE;   // PGN 65097
+      sendSelectedSpeed : Bool := TRUE;   // PGN 61474 Machine Selected Speed
+      sendRearHitch : Bool := TRUE;   // PGN 65093
+      sendFrontHitch : Bool;   // PGN 65094
+      sendRearPto : Bool := TRUE;   // PGN 65091
+      sendFrontPto : Bool;   // PGN 65092
+      auxValveMask : Word;   // bit n = Aux Valve n Estimated Flow (PGN 65040 + n)
+      sendVehiclePosition : Bool;   // PGN 65267 (J1939)
+      sendVehicleDirSpeed : Bool;   // PGN 65256 (J1939)
+      sendTimeDate : Bool := TRUE;   // PGN 65254, uit de klok van de PLC
+      sendGnss : Bool;   // NMEA 2000 129025, 129026, 129029 uit gnss
+      sendStopState : Bool;   // PGN 64770 All Implements Stop Operations Switch State
+      sendLanguage : Bool := TRUE;   // PGN 65039 Language Command
+      // perioden
+      periodFast : Time := T#100MS;   // snelheden, hef, aftakas, motor
+      periodAux : Time := T#100MS;   // aux-ventielen
+      periodNav : Time := T#1S;   // 65267 / 65256
+      periodTimeDate : Time := T#1S;
+      periodGnssPosition : Time := T#100MS;   // 129025
+      periodGnssCogSog : Time := T#250MS;   // 129026
+      periodGnssData : Time := T#1S;   // 129029 (fast packet, 7 frames)
+      periodStopState : Time := T#1S;   // en bij elke wijziging
+      // opdrachten van werktuigen (klasse 3) en Maintain Power
+      cmdTimeout : Time := T#3S;   // opdracht niet herhaald: niet meer actief (werktuigen sturen ze minstens elke seconde)
+      powerTimeout : Time := T#3S;   // Maintain Power niet herhaald: vervalt
+      acceptSpeedCommand : Bool;   // Machine Selected Speed Command (PGN 64835) aanvaarden
+      limitStatusReporting : Bool := TRUE;   // de tractor meldt limit status / exit code (Tractor Facilities)
+      // Language Command
+      language : String[2] := 'nl';   // ISO 639, kleine letters
+      country : String[2] := 'BE';   // ISO 3166, hoofdletters; leeg = niet gestuurd
+      decimalComma : Bool := TRUE;   // TRUE = komma, FALSE = punt
+      time12h : Bool;   // FALSE = 24 uur
+      dateFormat : USInt := 0;   // 0 = ddmmjjjj, 1 = ddjjjjmm, 2 = mmjjjjdd, 3 = mmddjjjj, 4 = jjjjmmdd, 5 = jjjjddmm
+      units : USInt := 0;   // alle eenheden: 0 = metrisch, 1 = imperiaal, 2 = US
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuAllow"
+VERSION : 0.1
+   STRUCT
+      rearHitch : Bool;   // de bestuurder geeft de achterhef vrij voor opdrachten van een werktuig
+      frontHitch : Bool;
+      rearPto : Bool;
+      frontPto : Bool;
+      auxValves : Word;   // bit n = ventiel n
+      speed : Bool;   // rijsnelheid (Machine Selected Speed Command)
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuGnss"
+VERSION : 0.1
+   STRUCT
+      valid : Bool;   // positie geldig; FALSE = "niet beschikbaar"
+      latitude_deg : LReal;   // WGS 84, + = noord
+      longitude_deg : LReal;   // + = oost
+      altitude_m : LReal;   // boven de ellipsoïde
+      altitudeOk : Bool;
+      cogSogOk : Bool;   // koers en snelheid geldig
+      cog_deg : Real;   // koers over de grond, 0..360, ten opzichte van het ware noorden
+      sog_ms : Real;   // snelheid over de grond
+      gnssType : USInt := 0;   // 0 GPS, 1 GLONASS, 2 GPS+GLONASS, 3 GPS+SBAS, 4 GPS+SBAS+GLONASS, ...
+      method : USInt := 1;   // 0 geen fix, 1 GNSS, 2 DGNSS, 4 RTK fixed, 5 RTK float, 6 geschat
+      satellites : USInt;
+      hdop : Real := 1.0;
+      pdop : Real := 1.5;
+      geoidalSeparation_m : Real;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuHitchCmd"
+VERSION : 0.1
+   STRUCT
+      active : Bool;   // TRUE = volg de opdracht (vrijgegeven, vers, van het werktuig dat de controle heeft)
+      position_pct : Real;   // gevraagde hefpositie 0..100 %
+      source : Byte;   // adres van het werktuig dat de controle heeft (16#FF = geen)
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuPtoCmd"
+VERSION : 0.1
+   STRUCT
+      active : Bool;   // TRUE = volg de opdracht
+      speed_rpm : Real;   // gevraagd toerental
+      speedOk : Bool;   // FALSE = het werktuig vraagt geen toerental
+      engage : USInt := 3;   // 0 = uitschakelen, 1 = inschakelen, 3 = geen opdracht
+      mode1000 : USInt := 3;   // 0 = 540, 1 = 1000, 3 = geen opdracht
+      economy : USInt := 3;   // 0 = uit, 1 = aan, 3 = geen opdracht
+      source : Byte;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuValveCmd"
+VERSION : 0.1
+   STRUCT
+      active : Bool;   // TRUE = volg de opdracht
+      flow_pct : Real;   // gevraagde poortdebiet 0..100 %
+      flowOk : Bool;
+      state : USInt := 15;   // 0 = blokkeren, 1 = uitschuiven, 2 = intrekken, 3 = zweven, 15 = geen opdracht
+      failSafe : USInt := 3;   // 0 = blokkeren, 1 = zweven, 3 = geen opdracht
+      source : Byte;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuSpeedCmd"
+VERSION : 0.1
+   STRUCT
+      active : Bool;   // TRUE = volg de opdracht
+      setpoint_ms : Real;   // gevraagde rijsnelheid
+      setpointOk : Bool;
+      limit_ms : Real;   // maximum dat het werktuig toelaat
+      limitOk : Bool;
+      direction : USInt := 3;   // 0 = achteruit, 1 = vooruit, 3 = geen opdracht
+      source : Byte;
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuCmd"
+VERSION : 0.1
+   STRUCT
+      rearHitch : "typeTecuHitchCmd";   // PGN 65090 byte 2
+      frontHitch : "typeTecuHitchCmd";   // PGN 65090 byte 1
+      rearPto : "typeTecuPtoCmd";   // PGN 65090 bytes 5-6, 7, 8
+      frontPto : "typeTecuPtoCmd";   // PGN 65090 bytes 3-4, 7, 8
+      auxValve : Array[0..15] of "typeTecuValveCmd";   // PGN 65072 + n
+      speed : "typeTecuSpeedCmd";   // PGN 64835
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuPower"
+VERSION : 0.1
+   STRUCT
+      ecuPower : Bool;   // een werktuig vraagt de ECU-voeding aan te houden (na key-off)
+      actuatorPower : Bool;   // een werktuig vraagt de actuatorvoeding aan te houden
+      requesters : USInt;   // aantal werktuigen met een geldige vraag
+      lastSource : Byte;   // adres van het laatste Maintain Power-bericht
+      implementInWork : USInt := 3;   // uit het laatste bericht: 0 niet, 1 wel, 3 n.b.
+      implementTransport : USInt := 3;   // idem, transportstand
+   END_STRUCT;
+
+END_TYPE
+
+TYPE "typeTecuDiag"
+VERSION : 0.1
+   STRUCT
+      stateText : String[40];   // leesbare toestand
+      rxFrames : UDInt;   // ontvangen frames (alle bronnen)
+      txFrames : UDInt;   // verzonden frames
+      rcvStatus : Word;   // status van LCan_RcvTransparentMessage
+      sendStatus : Word;   // laatste fout van LCan_SendTransparentMessage
+      sendTimeouts : UDInt;   // frame na 1 s zonder done/error opgegeven
+      txLate : UDInt;   // bericht later verstuurd: wachtrij vol (cyclus te traag of te veel berichten)
+      requests : UDInt;   // ontvangen verzoeken (PGN 59904) aan ons of aan iedereen
+      lastRequestPgn : DWord;
+      lastRequestSa : Byte;
+      claimsSent : UDInt;
+      nacksSent : UDInt;
+      facilityRequests : UDInt;   // Required Tractor Facilities ontvangen
+      cmdFrames : UDInt;   // opdrachten van werktuigen ontvangen (hef/aftakas, ventielen, snelheid)
+      cmdRejected : UDInt;   // opdracht genegeerd: een ander werktuig heeft de controle
+      powerFrames : UDInt;   // Maintain Power ontvangen
+      lostToName : Array[0..7] of Byte;   // NAME van het toestel dat ons adres won
+   END_STRUCT;
+
+END_TYPE

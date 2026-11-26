@@ -241,13 +241,18 @@ export function parseVarLine(line) {
  */
 function canLayer(src) {
   if (!/LCan_/.test(src)) return src;
+  const NET = 'canNet : USInt := 0;   // CAN-interface van de sturing (0 = de eerste)';
+  const hasHw = /^\s*hwIdCmCan\s*:/m.test(src);
+  const hasProxyIndex = /^\s*rxProxyIndex\s*:/m.test(src);
   return src
     .replace(/^\s*(rx|tx)Proxy(In|Out)\s*:\s*"LCan_type\w+"\s*;.*\n/gm, '')
-    .replace(/^\s*canStatus\s*:\s*Byte\s*;.*\n/gm, '')
-    .replace(/^(\s*)hwIdCmCan\s*:\s*HW_IO\s*;.*$/gm, '$1canNet : USInt := 0;   // CAN-interface van de sturing (0 = de eerste)')
+    // without hwIdCmCan (a block that sets no filters) the CM CAN status byte becomes the CAN interface
+    .replace(/^(\s*)canStatus\s*:\s*Byte\s*;.*\n/gm, hasHw ? '' : `$1${NET}\n`)
+    .replace(/^(\s*)hwIdCmCan\s*:\s*HW_IO\s*;.*$/gm, `$1${NET}`)
     .replace(/^\s*canModulStatusByte\s*:=\s*#canStatus\s*,\s*\n/gm, '')
     .replace(/^(\s*)inputArea\s*:=\s*#rxProxyIn\s*,/gm, '$1netId := #canNet,')
-    .replace(/^(\s*)outputArea\s*:=\s*#rxProxyOut\s*,/gm, '$1proxyIndex := #rxProxyIndex,')
+    // the filter list of the receive proxy; a block without rxProxyIndex receives everything (no filter list)
+    .replace(/^(\s*)outputArea\s*:=\s*#rxProxyOut\s*,[^\n]*\n/gm, (m, ind) => (hasProxyIndex ? `${ind}proxyIndex := #rxProxyIndex,\n` : ''))
     .replace(/^(\s*)inputArea\s*:=\s*#txProxyIn\s*,/gm, '$1netId := #canNet,')
     .replace(/^\s*outputArea\s*:=\s*#txProxyOut\s*,\s*\n/gm, '')
     .replace(/#hwIdCmCan\b/g, '#canNet');

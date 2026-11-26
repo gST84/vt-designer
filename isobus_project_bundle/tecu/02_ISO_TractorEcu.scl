@@ -1,0 +1,1258 @@
+// =====================================================================
+//  ISO_TractorEcu: S7-1500 + ET 200SP CM CAN als tractor-ECU (TECU, ISO 11783-9).
+//  Het spiegelbeeld van ISO_TractorDecode: stuurt de tractorberichten uit
+//  tractor : "typeIsoTractor" (dezelfde schaling), en levert de diensten van een TECU:
+//    - adresclaim als Tractor ECU (functie 134) en antwoorden op verzoeken;
+//    - Tractor Facilities Response (klasse 1..3), Language Command, Time/Date,
+//      All Implements Stop, Maintain Power van werktuigen (uitgang power);
+//    - GNSS als NMEA 2000: 129025, 129026, 129029 (fast packet) uit gnss;
+//    - klasse 3: opdrachten van werktuigen (hef, aftakas, ventielen, rijsnelheid)
+//      in cmd. De FB stuurt NOOIT zelf iets aan: cmd.<functie>.active is enkel TRUE
+//      als de bestuurder die functie vrijgaf (allow), de opdracht vers is en van het
+//      werktuig komt dat de controle heeft. Zie README, hoofdstuk Veiligheid.
+//  Eén receive proxy die ALLES ontvangt (een TECU moet elk toestel beantwoorden; de
+//  CM CAN filtert enkel op exacte ID's) en één transmit proxy.
+//
+//  Vereist: Siemens-bibliotheek LCan, tia_isobus_decoder/01_ISO_Types.udt, 01_TECU_Types.udt.
+//  Byte-indeling: statusberichten zoals ISO_TractorDecode (gecontroleerd met een tractorlog);
+//  opdrachten en Tractor Facilities volgens ISO 11783-7 (2002, bijlage B); Maintain Power,
+//  Language Command, Time/Date, MSS Command, All Implements Stop en NMEA 2000 zoals AgIsoStack++.
+//  Versie 0.1 – 2026-11-26 – eerste versie.
+// =====================================================================
+
+FUNCTION "TEC_Elapsed" : Time
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      since : Time;
+      now : Time;
+   END_VAR
+   VAR_TEMP
+      t : Time;
+   END_VAR
+
+BEGIN
+	#t := #now - #since;
+	IF #t < T#0MS THEN   // TIME_TCK is teruggesprongen naar 0
+	    #t := #t + T#24D_20H_31M_23S_647MS;
+	END_IF;
+	#TEC_Elapsed := #t;
+END_FUNCTION
+
+FUNCTION "TEC_Push" : Bool
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      id : DWord;
+      data : Array[0..7] of Byte;
+   END_VAR
+   VAR_IN_OUT
+      q : "typeTecTxQueue";
+   END_VAR
+   VAR_TEMP
+      idx : Int;
+   END_VAR
+
+BEGIN
+	IF #q.count >= 64 THEN
+	    #TEC_Push := FALSE;
+	ELSE
+	    #idx := (#q.head + #q.count) MOD 64;
+	    #q.frame[#idx].id := #id;
+	    #q.frame[#idx].data := #data;
+	    #q.count := #q.count + 1;
+	    #TEC_Push := TRUE;
+	END_IF;
+END_FUNCTION
+
+FUNCTION "TEC_Raw8" : Byte
+TITLE = 'Waarde naar 1 byte (ruw = (waarde - offset) / factor; 16#FF = niet beschikbaar) - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      value : Real;
+      factor : Real;
+      offset : Real;
+      ok : Bool;   // FALSE = niet beschikbaar
+   END_VAR
+   VAR_TEMP
+      v : Real;
+   END_VAR
+
+BEGIN
+	IF NOT #ok THEN
+	    #TEC_Raw8 := 16#FF;
+	ELSE
+	    #v := (#value - #offset) / #factor;
+	    IF #v < 0.0 THEN
+	        #v := 0.0;
+	    ELSIF #v > 250.0 THEN   // 16#FA: hoogste geldige waarde
+	        #v := 250.0;
+	    END_IF;
+	    #TEC_Raw8 := DINT_TO_BYTE(REAL_TO_DINT(#v));
+	END_IF;
+END_FUNCTION
+
+FUNCTION "TEC_Raw16" : Word
+TITLE = 'Waarde naar 2 bytes (16#FFFF = niet beschikbaar) - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      value : Real;
+      factor : Real;
+      offset : Real;
+      ok : Bool;
+   END_VAR
+   VAR_TEMP
+      v : Real;
+   END_VAR
+
+BEGIN
+	IF NOT #ok THEN
+	    #TEC_Raw16 := 16#FFFF;
+	ELSE
+	    #v := (#value - #offset) / #factor;
+	    IF #v < 0.0 THEN
+	        #v := 0.0;
+	    ELSIF #v > 64255.0 THEN   // 16#FAFF
+	        #v := 64255.0;
+	    END_IF;
+	    #TEC_Raw16 := DINT_TO_WORD(REAL_TO_DINT(#v));
+	END_IF;
+END_FUNCTION
+
+FUNCTION "TEC_Raw32" : DWord
+TITLE = 'Waarde naar 4 bytes (16#FFFFFFFF = niet beschikbaar) - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      value : LReal;
+      factor : LReal;
+      offset : LReal;
+      ok : Bool;
+   END_VAR
+   VAR_TEMP
+      v : LReal;
+   END_VAR
+
+BEGIN
+	IF NOT #ok THEN
+	    #TEC_Raw32 := 16#FFFFFFFF;
+	ELSE
+	    #v := (#value - #offset) / #factor;
+	    IF #v < 0.0 THEN
+	        #v := 0.0;
+	    ELSIF #v > 4211081215.0 THEN   // 16#FAFFFFFF
+	        #v := 4211081215.0;
+	    END_IF;
+	    #TEC_Raw32 := UDINT_TO_DWORD(LREAL_TO_UDINT(#v));
+	END_IF;
+END_FUNCTION
+
+FUNCTION "TEC_DaysSince1970" : DInt
+TITLE = 'Dagen sinds 1970-01-01 (NMEA 2000 datum) - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      year : DInt;
+      month : DInt;
+      day : DInt;
+   END_VAR
+   VAR_TEMP
+      y : DInt;
+      era : DInt;
+      yoe : DInt;
+      doy : DInt;
+      doe : DInt;
+      mp : DInt;
+   END_VAR
+
+BEGIN
+	// algoritme "days from civil" (H. Hinnant), gehele getallen
+	#y := #year;
+	IF #month <= 2 THEN
+	    #y := #y - 1;
+	END_IF;
+	#era := #y / 400;
+	#yoe := #y - #era * 400;
+	IF #month > 2 THEN
+	    #mp := #month - 3;
+	ELSE
+	    #mp := #month + 9;
+	END_IF;
+	#doy := (153 * #mp + 2) / 5 + #day - 1;
+	#doe := #yoe * 365 + #yoe / 4 - #yoe / 100 + #doy;
+	#TEC_DaysSince1970 := #era * 146097 + #doe - 719468;
+END_FUNCTION
+
+FUNCTION "TEC_EncodeSpeed" : Void
+TITLE = 'PGN 65096 / 65097 / 61474 coderen - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      s : "typeIsoSpeed";
+      kind : USInt;   // 0 = wheel-based, 1 = ground-based, 2 = machine selected
+   END_VAR
+   VAR_OUTPUT
+      d : Array[0..7] of Byte;
+   END_VAR
+   VAR_TEMP
+      w : Word;
+      dw : DWord;
+   END_VAR
+
+BEGIN
+	#w := "TEC_Raw16"(value := #s.speed_ms, factor := 0.001, offset := 0.0, ok := #s.speedOk);
+	#d[0] := WORD_TO_BYTE(#w);
+	#d[1] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	#dw := "TEC_Raw32"(value := #s.distance_m, factor := 0.001, offset := 0.0, ok := #s.distanceOk);
+	#d[2] := DWORD_TO_BYTE(#dw);
+	#d[3] := DWORD_TO_BYTE(SHR(IN := #dw, N := 8));
+	#d[4] := DWORD_TO_BYTE(SHR(IN := #dw, N := 16));
+	#d[5] := DWORD_TO_BYTE(SHR(IN := #dw, N := 24));
+	CASE #kind OF
+	    0:  // wheel-based: max. tijd tractorvoeding, richting, sleutel, start/stop, omgekeerde bestuurder
+	        #d[6] := USINT_TO_BYTE(#s.maxTimeTractorPower_min);
+	        #d[7] := (USINT_TO_BYTE(#s.direction) AND 16#03)
+	                 OR SHL(IN := USINT_TO_BYTE(#s.keySwitch) AND 16#03, N := 2)
+	                 OR SHL(IN := USINT_TO_BYTE(#s.startStopState) AND 16#03, N := 4)
+	                 OR SHL(IN := USINT_TO_BYTE(#s.operatorDirReversed) AND 16#03, N := 6);
+	    1:  // ground-based: enkel de richting
+	        #d[6] := 16#FF;
+	        #d[7] := 16#FC OR (USINT_TO_BYTE(#s.direction) AND 16#03);
+	    ELSE  // machine selected speed: exit code, richting, bron, limit status
+	        #d[6] := 16#C0 OR (USINT_TO_BYTE(#s.exitCode) AND 16#3F);
+	        #d[7] := (USINT_TO_BYTE(#s.direction) AND 16#03)
+	                 OR SHL(IN := USINT_TO_BYTE(#s.speedSource) AND 16#07, N := 2)
+	                 OR SHL(IN := USINT_TO_BYTE(#s.limitStatus) AND 16#07, N := 5);
+	END_CASE;
+END_FUNCTION
+
+FUNCTION "TEC_EncodeHitch" : Void
+TITLE = 'PGN 65093 / 65094 coderen - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      h : "typeIsoHitch";
+   END_VAR
+   VAR_OUTPUT
+      d : Array[0..7] of Byte;
+   END_VAR
+   VAR_TEMP
+      w : Word;
+   END_VAR
+
+BEGIN
+	#d[0] := "TEC_Raw8"(value := #h.position_pct, factor := 0.4, offset := 0.0, ok := #h.positionOk);
+	#d[1] := 16#07 OR SHL(IN := USINT_TO_BYTE(#h.limitStatus) AND 16#07, N := 3)
+	         OR SHL(IN := USINT_TO_BYTE(#h.inWork) AND 16#03, N := 6);
+	#d[2] := "TEC_Raw8"(value := #h.nominalLinkForce_pct, factor := 0.8, offset := -100.0, ok := #h.nominalLinkForceOk);
+	#w := "TEC_Raw16"(value := #h.draft_N, factor := 10.0, offset := -320000.0, ok := #h.draftOk);
+	#d[3] := WORD_TO_BYTE(#w);
+	#d[4] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	#d[5] := 16#C0 OR (USINT_TO_BYTE(#h.exitCode) AND 16#3F);
+	#d[6] := 16#FF;
+	#d[7] := 16#FF;
+END_FUNCTION
+
+FUNCTION "TEC_EncodePto" : Void
+TITLE = 'PGN 65091 / 65092 coderen - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      p : "typeIsoPto";
+   END_VAR
+   VAR_OUTPUT
+      d : Array[0..7] of Byte;
+   END_VAR
+   VAR_TEMP
+      w : Word;
+   END_VAR
+
+BEGIN
+	#w := "TEC_Raw16"(value := #p.speed_rpm, factor := 0.125, offset := 0.0, ok := #p.speedOk);
+	#d[0] := WORD_TO_BYTE(#w);
+	#d[1] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	#w := "TEC_Raw16"(value := #p.setpoint_rpm, factor := 0.125, offset := 0.0, ok := #p.setpointOk);
+	#d[2] := WORD_TO_BYTE(#w);
+	#d[3] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	#d[4] := (USINT_TO_BYTE(#p.engagementReqStatus) AND 16#03)
+	         OR SHL(IN := USINT_TO_BYTE(#p.economyMode) AND 16#03, N := 2)
+	         OR SHL(IN := USINT_TO_BYTE(#p.mode1000) AND 16#03, N := 4)
+	         OR SHL(IN := USINT_TO_BYTE(#p.engaged) AND 16#03, N := 6);
+	#d[5] := 16#01 OR SHL(IN := USINT_TO_BYTE(#p.speedLimitStatus) AND 16#07, N := 1)
+	         OR SHL(IN := USINT_TO_BYTE(#p.economyReqStatus) AND 16#03, N := 4)
+	         OR SHL(IN := USINT_TO_BYTE(#p.modeReqStatus) AND 16#03, N := 6);
+	#d[6] := 16#C0 OR (USINT_TO_BYTE(#p.exitCode) AND 16#3F);
+	#d[7] := 16#FF;
+END_FUNCTION
+
+FUNCTION "TEC_EncodeEngine" : Void
+TITLE = 'PGN 61444 EEC1 coderen - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      e : "typeIsoEngine";
+   END_VAR
+   VAR_OUTPUT
+      d : Array[0..7] of Byte;
+   END_VAR
+   VAR_TEMP
+      w : Word;
+   END_VAR
+
+BEGIN
+	#d[0] := 16#FF;   // koppelmodus: n.b.
+	#d[1] := "TEC_Raw8"(value := #e.driverDemandTorque_pct, factor := 1.0, offset := -125.0, ok := #e.driverDemandTorqueOk);
+	#d[2] := "TEC_Raw8"(value := #e.actualTorque_pct, factor := 1.0, offset := -125.0, ok := #e.actualTorqueOk);
+	#w := "TEC_Raw16"(value := #e.speed_rpm, factor := 0.125, offset := 0.0, ok := #e.speedOk);
+	#d[3] := WORD_TO_BYTE(#w);
+	#d[4] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	#d[5] := 16#FF;   // bron van de sturing: n.b.
+	#d[6] := 16#F0 OR (USINT_TO_BYTE(#e.starterMode) AND 16#0F);
+	#d[7] := 16#FF;   // gevraagd koppel: n.b.
+END_FUNCTION
+
+FUNCTION "TEC_EncodeAux" : Void
+TITLE = 'PGN 65040..65055 Aux Valve Estimated Flow coderen - tecu 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+   VAR_INPUT
+      v : "typeIsoAuxFlow";
+   END_VAR
+   VAR_OUTPUT
+      d : Array[0..7] of Byte;
+   END_VAR
+
+BEGIN
+	#d[0] := "TEC_Raw8"(value := #v.extendFlow_pct, factor := 1.0, offset := -125.0, ok := #v.extendOk);
+	#d[1] := "TEC_Raw8"(value := #v.retractFlow_pct, factor := 1.0, offset := -125.0, ok := #v.retractOk);
+	#d[2] := (USINT_TO_BYTE(#v.valveState) AND 16#0F) OR 16#30
+	         OR SHL(IN := USINT_TO_BYTE(#v.failSafeMode) AND 16#03, N := 6);
+	#d[3] := 16#FF;
+	#d[4] := 16#FF;
+	#d[5] := 16#FF;
+	#d[6] := 16#FF;
+	#d[7] := 16#FF;
+END_FUNCTION
+
+FUNCTION_BLOCK "ISO_TractorEcu"
+TITLE = 'ISOBUS tractor-ECU (TECU, ISO 11783-9) - versie 0.1'
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Claude'
+FAMILY : ISOBUS
+VERSION : 0.1
+//tecu versie 0.1 (2026-11-26)
+//Elke cyclus aanroepen, liefst in een cyclische interrupt-OB van 2 ms met een eigen deelprocesbeeld
+//voor de proxy's (zie README). Waarden in tractor, gnss en cfg; opdrachten van werktuigen in cmd.
+   VAR_INPUT
+      enable : Bool;   // TRUE = tractor-ECU actief, positieve flank = (her)start
+      myAddress : Byte := 16#F0;   // vast adres van een TECU
+      canStatus : Byte;   // statusbyte van de CM CAN
+      nameIdentity : UDInt := 1;   // NAME: identiteitsnummer (21 bit), uniek per toestel van dezelfde fabrikant
+      nameManufacturer : UInt := 0;   // NAME: fabrikantcode (11 bit)
+      nameFunctionInstance : Byte := 0;   // NAME: functie-instantie (0 = eerste tractor-ECU)
+      nameEcuInstance : Byte := 0;   // NAME: ECU-instantie (0..7)
+      cfg : "typeTecuConfig";   // klasse, berichten, perioden, taal
+      allow : "typeTecuAllow";   // vrijgave door de bestuurder van de opdrachten van werktuigen
+      gnss : "typeTecuGnss";   // positie voor NMEA 2000 (cfg.sendGnss)
+      stopOperations : Bool;   // TRUE = de bestuurder vraagt alle werktuigen te stoppen (PGN 64770)
+   END_VAR
+
+   VAR_OUTPUT
+      running : Bool;   // adres geclaimd, berichten lopen
+      error : Bool;   // gestopt met fout: zie diag
+      state : Int;
+      cmd : "typeTecuCmd";   // opdrachten van werktuigen: enkel volgen als .active
+      power : "typeTecuPower";   // Maintain Power van werktuigen
+      diag : "typeTecuDiag";
+   END_VAR
+
+   VAR_IN_OUT
+      tractor : "typeIsoTractor";   // de waarden die de TECU stuurt (zelfde structuur als ISO_TractorDecode)
+      rxProxyIn : "LCan_typeRcvInTransparentMessage";
+      rxProxyOut : "LCan_typeRcvOutTransparentMessage";
+      txProxyIn : "LCan_typeSendInTransparentMessage";
+      txProxyOut : "LCan_typeSendOutTransparentMessage";
+   END_VAR
+
+   VAR
+      rcv : "LCan_RcvTransparentMessage";
+      snd : "LCan_SendTransparentMessage";
+      rxData : Array[0..7] of Byte;
+      rxAck : Bool;
+      rxClear : Bool;   // één aanroep TRUE: ontvangstbuffer van de proxy leegmaken
+      txData : Array[0..7] of Byte;
+      txId : DWord;
+      txExec : Bool;
+      txState : Int;
+      tTx : Time;
+      q : "typeTecTxQueue";
+      ff8 : Array[0..7] of Byte := [8(16#FF)];
+      isoName : Array[0..7] of Byte;
+      st : Int;
+      tState : Time;
+      edgeEnable : Bool;
+      // adresbeheer (ISO 11783-5)
+      claimed : Bool;
+      claimReq : Bool;
+      lostAddress : Bool;
+      nackReq : Bool;
+      nackSa : Byte;
+      nackPgn : Array[0..2] of Byte;
+      // planner: 0 EEC1, 1 wiel, 2 grond, 3 MSS, 4/5 hef achter/voor, 6/7 aftakas achter/voor, 8 positie,
+      // 9 richting, 10 tijd, 11-13 GNSS, 14 stop, 15 taal, 16 facilities, 20-35 aux-ventiel 0-15
+      tLast : Array[0..35] of Time;
+      sendNow : Array[0..35] of Bool;
+      langLast : Array[0..7] of Byte;   // laatst gestuurde Language Command
+      stopLast : Bool;
+      stopTransitions : Byte;
+      sid : Byte;   // NMEA 2000 sequence ID
+      fpSeq : Byte;   // fast packet volgnummer (0..7)
+      gbuf : Array[0..42] of Byte;   // 129029
+      // opdrachten: wie heeft de controle, wanneer, laatste waarden (ruw)
+      ownHitch : Array[0..1] of Byte;   // 0 = achter, 1 = voor
+      tHitch : Array[0..1] of Time;
+      hitchRaw : Array[0..1] of Byte;
+      ownPto : Array[0..1] of Byte;
+      tPto : Array[0..1] of Time;
+      ptoSpeedRaw : Array[0..1] of Word;
+      ptoEngage : Array[0..1] of Byte;
+      ptoMode : Array[0..1] of Byte;
+      ptoEco : Array[0..1] of Byte;
+      ownValve : Array[0..15] of Byte;
+      tValve : Array[0..15] of Time;
+      valveFlowRaw : Array[0..15] of Byte;
+      valveCmd : Array[0..15] of Byte;   // byte 3 van het bericht
+      ownSpeed : Byte;
+      tSpeed : Time;
+      speedRaw : Word;
+      speedLimitRaw : Word;
+      speedDir : Byte;
+      // Maintain Power van maximaal 8 werktuigen
+      pwrSa : Array[0..7] of Byte;
+      pwrT : Array[0..7] of Time;
+      pwrByte0 : Array[0..7] of Byte;
+      pwrByte1 : Array[0..7] of Byte;
+   END_VAR
+
+   VAR_TEMP
+      now : Time;
+      d : Array[0..7] of Byte;
+      ok : Bool;
+      i : Int;
+      k : Int;
+      n : Int;
+      pf : Byte;
+      ps : Byte;
+      sa : Byte;
+      pgn : DInt;
+      rq : DInt;
+      idx : Int;
+      en : Bool;
+      per : Time;
+      due : Bool;
+      w : Word;
+      dw : DWord;
+      lw : LWord;
+      c1 : Int;
+      prio : DWord;
+      pgnTx : DWord;
+      has : Bool;
+      cls3 : Bool;
+      fresh : Bool;
+      b : Byte;
+      utc : DTL;
+      loc : DTL;
+      r : Int;
+      offMin : Int;
+      li : LInt;
+      di : DInt;
+      lang : Array[0..7] of Byte;   // Language Command zoals hij nu moet zijn
+   END_VAR
+
+
+BEGIN
+	REGION Voorbereiding
+	    #now := TIME_TCK();
+	    IF #enable AND NOT #edgeEnable THEN   // (her)start
+	        #diag.stateText := '';
+	        #diag.rxFrames := 0;
+	        #diag.txFrames := 0;
+	        // NAME (ISO 11783-5): functie 134 = Tractor ECU, industriegroep 2, apparaatklasse 0
+	        #isoName[0] := DWORD_TO_BYTE(UDINT_TO_DWORD(#nameIdentity));
+	        #isoName[1] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#nameIdentity), N := 8));
+	        #isoName[2] := DWORD_TO_BYTE(SHR(IN := UDINT_TO_DWORD(#nameIdentity), N := 16) AND 16#0000001F)
+	                       OR SHL(IN := WORD_TO_BYTE(UINT_TO_WORD(#nameManufacturer) AND 16#0007), N := 5);
+	        #isoName[3] := WORD_TO_BYTE(SHR(IN := UINT_TO_WORD(#nameManufacturer), N := 3));
+	        #isoName[4] := (#nameEcuInstance AND 16#07) OR SHL(IN := #nameFunctionInstance AND 16#1F, N := 3);
+	        #isoName[5] := 16#86;   // functie 134
+	        #isoName[6] := 16#00;   // apparaatklasse 0
+	        #isoName[7] := 16#20;   // industriegroep 2, niet zelfconfigurerend
+	        #claimed := FALSE;
+	        #claimReq := FALSE;
+	        #lostAddress := FALSE;
+	        #nackReq := FALSE;
+	        FOR #i := 0 TO 1 DO
+	            #ownHitch[#i] := 16#FF;
+	            #ownPto[#i] := 16#FF;
+	        END_FOR;
+	        FOR #i := 0 TO 15 DO
+	            #ownValve[#i] := 16#FF;
+	        END_FOR;
+	        #ownSpeed := 16#FF;
+	        FOR #i := 0 TO 7 DO
+	            #pwrSa[#i] := 16#FF;
+	        END_FOR;
+	        FOR #i := 0 TO 35 DO
+	            #sendNow[#i] := FALSE;
+	        END_FOR;
+	        #q.head := 0;
+	        #q.count := 0;
+	        #txState := 0;
+	        #txExec := FALSE;
+	        #stopLast := #stopOperations;
+	        #st := 1;
+	    ELSIF NOT #enable THEN
+	        #st := 0;
+	        #claimed := FALSE;
+	        #q.count := 0;
+	    END_IF;
+	    #edgeEnable := #enable;
+	END_REGION
+
+	REGION Ontvangen (alle frames, één per handshake)
+	    #rcv(enable := #st <> 0,
+	         canModulStatusByte := #canStatus,
+	         deviceType := FALSE,
+	         ignoreRcvFilterSetting := TRUE,
+	         resetRcvMsgBuffer := #rxClear,
+	         ackMessage := #rxAck,
+	         inputArea := #rxProxyIn,
+	         outputArea := #rxProxyOut,
+	         messageData := #rxData);
+	    #diag.rcvStatus := #rcv.status;
+	    #rxClear := FALSE;   // flank: één aanroep is genoeg
+
+	    #rxAck := #rcv.valid AND NOT #rxAck;
+
+	    IF #rxAck THEN
+	        #diag.rxFrames := #diag.rxFrames + 1;
+	        #pf := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 16));
+	        #ps := DWORD_TO_BYTE(SHR(IN := #rcv.messageId, N := 8));
+	        #sa := DWORD_TO_BYTE(#rcv.messageId);
+	        IF BYTE_TO_USINT(#pf) >= 240 THEN   // PDU2: PGN = PF.PS
+	            #pgn := DWORD_TO_DINT(SHR(IN := #rcv.messageId, N := 8) AND 16#3FFFF);
+	        ELSE   // PDU1: PS = bestemming
+	            #pgn := DWORD_TO_DINT(SHR(IN := #rcv.messageId, N := 8) AND 16#3FF00);
+	        END_IF;
+
+	        // ---- Request (PGN 59904) aan iedereen of aan ons
+	        IF #pf = 16#EA AND (#ps = 16#FF OR (#ps = #myAddress AND #claimed)) AND #sa <> #myAddress THEN
+	            #diag.requests := #diag.requests + 1;
+	            #diag.lastRequestSa := #sa;
+	            #rq := DWORD_TO_DINT(SHL(IN := BYTE_TO_DWORD(#rxData[2]), N := 16) OR SHL(IN := BYTE_TO_DWORD(#rxData[1]), N := 8)
+	                                 OR BYTE_TO_DWORD(#rxData[0]));
+	            #diag.lastRequestPgn := DINT_TO_DWORD(#rq);
+	            #idx := -1;
+	            CASE #rq OF
+	                60928: #claimReq := TRUE;   // Request for Address Claimed
+	                    #idx := -2;
+	                61444: #idx := 0;
+	                65096: #idx := 1;
+	                65097: #idx := 2;
+	                61474: #idx := 3;
+	                65093: #idx := 4;
+	                65094: #idx := 5;
+	                65091: #idx := 6;
+	                65092: #idx := 7;
+	                65267: #idx := 8;
+	                65256: #idx := 9;
+	                65254: #idx := 10;
+	                129025: #idx := 11;
+	                129026: #idx := 12;
+	                129029: #idx := 13;
+	                64770: #idx := 14;
+	                65039: #idx := 15;
+	                65033: #idx := 16;
+	                65040..65055: #idx := DINT_TO_INT(#rq - 65040) + 20;
+	            END_CASE;
+	            IF #idx >= 0 THEN
+	                #sendNow[#idx] := TRUE;   // de planner stuurt het, als het bericht aan staat
+	            ELSIF #idx = -1 AND #ps = #myAddress THEN   // iets anders aan ons gevraagd: niet ondersteund
+	                #nackSa := #sa;
+	                #nackPgn[0] := #rxData[0];
+	                #nackPgn[1] := #rxData[1];
+	                #nackPgn[2] := #rxData[2];
+	                #nackReq := TRUE;
+	            END_IF;
+
+	        // ---- iemand anders claimt ons adres: de laagste NAME wint (byte 7 weegt het zwaarst)
+	        ELSIF #pf = 16#EE AND #ps = 16#FF AND #sa = #myAddress AND #claimed THEN
+	            #c1 := 0;
+	            FOR #i := 7 TO 0 BY -1 DO
+	                IF #c1 = 0 THEN
+	                    IF BYTE_TO_USINT(#isoName[#i]) < BYTE_TO_USINT(#rxData[#i]) THEN
+	                        #c1 := -1;
+	                    ELSIF BYTE_TO_USINT(#isoName[#i]) > BYTE_TO_USINT(#rxData[#i]) THEN
+	                        #c1 := 1;
+	                    END_IF;
+	                END_IF;
+	            END_FOR;
+	            IF #c1 < 0 THEN
+	                #claimReq := TRUE;   // wij hebben voorrang: onze claim opnieuw sturen
+	            ELSIF #c1 > 0 THEN
+	                #lostAddress := TRUE;
+	                FOR #i := 0 TO 7 DO
+	                    #diag.lostToName[#i] := #rxData[#i];
+	                END_FOR;
+	            END_IF;
+
+	        ELSIF #st = 10 AND #sa <> #myAddress THEN
+	            CASE #pgn OF
+	                65032:  // ---- Required Tractor Facilities: antwoorden met Tractor Facilities Response
+	                    #diag.facilityRequests := #diag.facilityRequests + 1;
+	                    #sendNow[16] := TRUE;
+
+	                65095:  // ---- Maintain Power van een werktuig
+	                    #diag.powerFrames := #diag.powerFrames + 1;
+	                    #k := -1;
+	                    FOR #i := 0 TO 7 DO
+	                        IF #pwrSa[#i] = #sa AND #k < 0 THEN
+	                            #k := #i;
+	                        END_IF;
+	                    END_FOR;
+	                    FOR #i := 0 TO 7 DO   // nieuw: een vrije of verlopen plaats
+	                        IF #k < 0 AND (#pwrSa[#i] = 16#FF OR "TEC_Elapsed"(since := #pwrT[#i], now := #now) > #cfg.powerTimeout) THEN
+	                            #k := #i;
+	                        END_IF;
+	                    END_FOR;
+	                    IF #k >= 0 THEN
+	                        #pwrSa[#k] := #sa;
+	                        #pwrT[#k] := #now;
+	                        #pwrByte0[#k] := #rxData[0];
+	                        #pwrByte1[#k] := #rxData[1];
+	                    END_IF;
+	                    #power.lastSource := #sa;
+	                    #power.implementInWork := BYTE_TO_USINT(#rxData[1] AND 16#03);
+	                    #power.implementTransport := BYTE_TO_USINT(SHR(IN := #rxData[1], N := 6) AND 16#03);
+
+	                65090:  // ---- Hitch and PTO Commands (klasse 3)
+	                    #diag.cmdFrames := #diag.cmdFrames + 1;
+	                    FOR #i := 0 TO 1 DO   // 0 = achter (byte 2), 1 = voor (byte 1)
+	                        #b := #rxData[1 - #i];
+	                        IF BYTE_TO_USINT(#b) <= 250 THEN
+	                            IF #ownHitch[#i] = 16#FF OR #ownHitch[#i] = #sa OR "TEC_Elapsed"(since := #tHitch[#i], now := #now) > #cfg.cmdTimeout THEN
+	                                #ownHitch[#i] := #sa;
+	                                #tHitch[#i] := #now;
+	                                #hitchRaw[#i] := #b;
+	                            ELSE
+	                                #diag.cmdRejected := #diag.cmdRejected + 1;
+	                            END_IF;
+	                        END_IF;
+	                    END_FOR;
+	                    FOR #i := 0 TO 1 DO   // 0 = achter (bytes 5-6, bits 6-5 / 6-5 en 2-1), 1 = voor (bytes 3-4, bits 8-7)
+	                        IF #i = 0 THEN
+	                            #w := SHL(IN := BYTE_TO_WORD(#rxData[5]), N := 8) OR BYTE_TO_WORD(#rxData[4]);
+	                            #d[0] := SHR(IN := #rxData[6], N := 4) AND 16#03;   // inschakelen
+	                            #d[1] := SHR(IN := #rxData[7], N := 4) AND 16#03;   // 540/1000
+	                            #d[2] := #rxData[7] AND 16#03;   // economy
+	                        ELSE
+	                            #w := SHL(IN := BYTE_TO_WORD(#rxData[3]), N := 8) OR BYTE_TO_WORD(#rxData[2]);
+	                            #d[0] := SHR(IN := #rxData[6], N := 6) AND 16#03;
+	                            #d[1] := SHR(IN := #rxData[7], N := 6) AND 16#03;
+	                            #d[2] := SHR(IN := #rxData[7], N := 2) AND 16#03;
+	                        END_IF;
+	                        IF WORD_TO_UINT(#w) <= 64255 OR #d[0] <> 16#03 OR #d[1] <> 16#03 OR #d[2] <> 16#03 THEN
+	                            IF #ownPto[#i] = 16#FF OR #ownPto[#i] = #sa OR "TEC_Elapsed"(since := #tPto[#i], now := #now) > #cfg.cmdTimeout THEN
+	                                #ownPto[#i] := #sa;
+	                                #tPto[#i] := #now;
+	                                #ptoSpeedRaw[#i] := #w;
+	                                #ptoEngage[#i] := #d[0];
+	                                #ptoMode[#i] := #d[1];
+	                                #ptoEco[#i] := #d[2];
+	                            ELSE
+	                                #diag.cmdRejected := #diag.cmdRejected + 1;
+	                            END_IF;
+	                        END_IF;
+	                    END_FOR;
+
+	                65072..65087:  // ---- Auxiliary Valve Command (klasse 3)
+	                    #diag.cmdFrames := #diag.cmdFrames + 1;
+	                    #i := DINT_TO_INT(#pgn - 65072);
+	                    IF BYTE_TO_USINT(#rxData[0]) <= 250 OR (#rxData[2] AND 16#0F) <> 16#0F THEN
+	                        IF #ownValve[#i] = 16#FF OR #ownValve[#i] = #sa OR "TEC_Elapsed"(since := #tValve[#i], now := #now) > #cfg.cmdTimeout THEN
+	                            #ownValve[#i] := #sa;
+	                            #tValve[#i] := #now;
+	                            #valveFlowRaw[#i] := #rxData[0];
+	                            #valveCmd[#i] := #rxData[2];
+	                        ELSE
+	                            #diag.cmdRejected := #diag.cmdRejected + 1;
+	                        END_IF;
+	                    END_IF;
+
+	                64835:  // ---- Machine Selected Speed Command
+	                    #diag.cmdFrames := #diag.cmdFrames + 1;
+	                    IF #ownSpeed = 16#FF OR #ownSpeed = #sa OR "TEC_Elapsed"(since := #tSpeed, now := #now) > #cfg.cmdTimeout THEN
+	                        #ownSpeed := #sa;
+	                        #tSpeed := #now;
+	                        #speedRaw := SHL(IN := BYTE_TO_WORD(#rxData[1]), N := 8) OR BYTE_TO_WORD(#rxData[0]);
+	                        #speedLimitRaw := SHL(IN := BYTE_TO_WORD(#rxData[3]), N := 8) OR BYTE_TO_WORD(#rxData[2]);
+	                        #speedDir := #rxData[7] AND 16#03;
+	                    ELSE
+	                        #diag.cmdRejected := #diag.cmdRejected + 1;
+	                    END_IF;
+	            END_CASE;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Opdrachten van werktuigen en Maintain Power (uitgangen)
+	    // De FB stuurt niets aan. active = klasse 3, vrijgegeven door de bestuurder, vers en van de eigenaar.
+	    #cls3 := #cfg.tecuClass >= 3;
+	    FOR #i := 0 TO 1 DO
+	        #fresh := #ownHitch[#i] <> 16#FF AND "TEC_Elapsed"(since := #tHitch[#i], now := #now) <= #cfg.cmdTimeout;
+	        IF NOT #fresh THEN
+	            #ownHitch[#i] := 16#FF;   // verlopen: een ander werktuig mag de controle nemen
+	        END_IF;
+	        IF #i = 0 THEN
+	            #cmd.rearHitch.active := #cls3 AND #allow.rearHitch AND #fresh;
+	            #cmd.rearHitch.position_pct := USINT_TO_REAL(BYTE_TO_USINT(#hitchRaw[0])) * 0.4;
+	            #cmd.rearHitch.source := #ownHitch[0];
+	        ELSE
+	            #cmd.frontHitch.active := #cls3 AND #cfg.addendumF AND #allow.frontHitch AND #fresh;
+	            #cmd.frontHitch.position_pct := USINT_TO_REAL(BYTE_TO_USINT(#hitchRaw[1])) * 0.4;
+	            #cmd.frontHitch.source := #ownHitch[1];
+	        END_IF;
+
+	        #fresh := #ownPto[#i] <> 16#FF AND "TEC_Elapsed"(since := #tPto[#i], now := #now) <= #cfg.cmdTimeout;
+	        IF NOT #fresh THEN
+	            #ownPto[#i] := 16#FF;
+	        END_IF;
+	        IF #i = 0 THEN
+	            #cmd.rearPto.active := #cls3 AND #allow.rearPto AND #fresh;
+	            #cmd.rearPto.speedOk := WORD_TO_UINT(#ptoSpeedRaw[0]) <= 64255;
+	            #cmd.rearPto.speed_rpm := UINT_TO_REAL(WORD_TO_UINT(#ptoSpeedRaw[0])) * 0.125;
+	            #cmd.rearPto.engage := BYTE_TO_USINT(#ptoEngage[0]);
+	            #cmd.rearPto.mode1000 := BYTE_TO_USINT(#ptoMode[0]);
+	            #cmd.rearPto.economy := BYTE_TO_USINT(#ptoEco[0]);
+	            #cmd.rearPto.source := #ownPto[0];
+	        ELSE
+	            #cmd.frontPto.active := #cls3 AND #cfg.addendumF AND #allow.frontPto AND #fresh;
+	            #cmd.frontPto.speedOk := WORD_TO_UINT(#ptoSpeedRaw[1]) <= 64255;
+	            #cmd.frontPto.speed_rpm := UINT_TO_REAL(WORD_TO_UINT(#ptoSpeedRaw[1])) * 0.125;
+	            #cmd.frontPto.engage := BYTE_TO_USINT(#ptoEngage[1]);
+	            #cmd.frontPto.mode1000 := BYTE_TO_USINT(#ptoMode[1]);
+	            #cmd.frontPto.economy := BYTE_TO_USINT(#ptoEco[1]);
+	            #cmd.frontPto.source := #ownPto[1];
+	        END_IF;
+	    END_FOR;
+	    FOR #i := 0 TO 15 DO
+	        #fresh := #ownValve[#i] <> 16#FF AND "TEC_Elapsed"(since := #tValve[#i], now := #now) <= #cfg.cmdTimeout;
+	        IF NOT #fresh THEN
+	            #ownValve[#i] := 16#FF;
+	        END_IF;
+	        #cmd.auxValve[#i].active := #cls3 AND (SHR(IN := #allow.auxValves, N := INT_TO_USINT(#i)) AND 16#0001) <> 16#0000 AND #fresh;
+	        #cmd.auxValve[#i].flowOk := BYTE_TO_USINT(#valveFlowRaw[#i]) <= 250;
+	        #cmd.auxValve[#i].flow_pct := USINT_TO_REAL(BYTE_TO_USINT(#valveFlowRaw[#i])) * 0.4;
+	        #cmd.auxValve[#i].state := BYTE_TO_USINT(#valveCmd[#i] AND 16#0F);
+	        #cmd.auxValve[#i].failSafe := BYTE_TO_USINT(SHR(IN := #valveCmd[#i], N := 6) AND 16#03);
+	        #cmd.auxValve[#i].source := #ownValve[#i];
+	    END_FOR;
+	    #fresh := #ownSpeed <> 16#FF AND "TEC_Elapsed"(since := #tSpeed, now := #now) <= #cfg.cmdTimeout;
+	    IF NOT #fresh THEN
+	        #ownSpeed := 16#FF;
+	    END_IF;
+	    #cmd.speed.active := #cfg.acceptSpeedCommand AND #allow.speed AND #fresh;
+	    #cmd.speed.setpointOk := WORD_TO_UINT(#speedRaw) <= 64255;
+	    #cmd.speed.setpoint_ms := UINT_TO_REAL(WORD_TO_UINT(#speedRaw)) * 0.001;
+	    #cmd.speed.limitOk := WORD_TO_UINT(#speedLimitRaw) <= 64255;
+	    #cmd.speed.limit_ms := UINT_TO_REAL(WORD_TO_UINT(#speedLimitRaw)) * 0.001;
+	    #cmd.speed.direction := BYTE_TO_USINT(#speedDir);
+	    #cmd.speed.source := #ownSpeed;
+
+	    // Maintain Power: 01 = aanhouden (ECU-voeding bits 8-7, actuatorvoeding bits 6-5 van byte 1)
+	    #power.ecuPower := FALSE;
+	    #power.actuatorPower := FALSE;
+	    #power.requesters := 0;
+	    FOR #i := 0 TO 7 DO
+	        IF #pwrSa[#i] <> 16#FF THEN
+	            IF "TEC_Elapsed"(since := #pwrT[#i], now := #now) > #cfg.powerTimeout THEN
+	                #pwrSa[#i] := 16#FF;
+	            ELSE
+	                #has := FALSE;
+	                IF (SHR(IN := #pwrByte0[#i], N := 6) AND 16#03) = 16#01 THEN
+	                    #power.ecuPower := TRUE;
+	                    #has := TRUE;
+	                END_IF;
+	                IF (SHR(IN := #pwrByte0[#i], N := 4) AND 16#03) = 16#01 THEN
+	                    #power.actuatorPower := TRUE;
+	                    #has := TRUE;
+	                END_IF;
+	                IF #has THEN
+	                    #power.requesters := #power.requesters + 1;
+	                END_IF;
+	            END_IF;
+	        END_IF;
+	    END_FOR;
+	END_REGION
+
+	REGION Toestandsmachine
+	    CASE #st OF
+	        1:  // adres claimen (Address Claimed, PGN 60928, aan iedereen)
+	            #rxClear := TRUE;   // geen oude berichten uit de buffer
+	            IF "TEC_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q) THEN
+	                #claimed := TRUE;
+	                #claimReq := FALSE;
+	                #tState := #now;
+	                #st := 2;
+	            END_IF;
+
+	        2:  // 250 ms wachten op een tegenclaim (adres 128-247)
+	            IF "TEC_Elapsed"(since := #tState, now := #now) >= T#250MS THEN
+	                FOR #i := 0 TO 35 DO   // alles meteen een eerste keer sturen
+	                    #tLast[#i] := #now - T#24D;
+	                END_FOR;
+	                #sendNow[16] := TRUE;   // Tractor Facilities Response bij het opstarten
+	                #sendNow[15] := TRUE;   // Language Command
+	                #st := 10;
+	            END_IF;
+
+	        // 10: actief, zie de planner
+	    END_CASE;
+
+	    IF #lostAddress AND #st < 900 THEN
+	        // adres verloren: wachtrij leegmaken (een frame dat onderweg is blijft vooraan), Cannot Claim en stoppen
+	        IF #txState = 1 THEN
+	            #q.count := 1;
+	        ELSE
+	            #q.count := 0;
+	        END_IF;
+	        #ok := "TEC_Push"(id := 16#18EEFFFE, data := #isoName, q := #q);
+	        #claimed := FALSE;
+	        #claimReq := FALSE;
+	        #nackReq := FALSE;
+	        #st := 909;
+	    END_IF;
+	END_REGION
+
+	REGION Verzoeken beantwoorden (ISO 11783-5 en -3)
+	    IF #claimed AND #st < 900 THEN
+	        IF #claimReq THEN
+	            IF "TEC_Push"(id := 16#18EEFF00 OR BYTE_TO_DWORD(#myAddress), data := #isoName, q := #q) THEN
+	                #claimReq := FALSE;
+	                #diag.claimsSent := #diag.claimsSent + 1;
+	            END_IF;
+	        END_IF;
+	        IF #nackReq THEN   // Acknowledgement (PGN 59392) aan iedereen: NACK voor de gevraagde PGN
+	            #d := #ff8;
+	            #d[0] := 16#01;
+	            #d[4] := #nackSa;
+	            #d[5] := #nackPgn[0];
+	            #d[6] := #nackPgn[1];
+	            #d[7] := #nackPgn[2];
+	            IF "TEC_Push"(id := 16#18E8FF00 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q) THEN
+	                #nackReq := FALSE;
+	                #diag.nacksSent := #diag.nacksSent + 1;
+	            END_IF;
+	        END_IF;
+	    ELSIF #st = 909 AND #claimReq THEN   // na verlies: Cannot Claim op een verzoek
+	        IF "TEC_Push"(id := 16#18EEFFFE, data := #isoName, q := #q) THEN
+	            #claimReq := FALSE;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Planner: berichten van de tractor
+	    IF #st = 10 THEN
+	        // wijzigingen die meteen een bericht vragen
+	        IF #stopOperations <> #stopLast THEN
+	            #stopLast := #stopOperations;
+	            #stopTransitions := INT_TO_BYTE((BYTE_TO_INT(#stopTransitions) + 1) MOD 251);
+	            #sendNow[14] := TRUE;
+	        END_IF;
+	        #lang := #ff8;
+	        #lang[0] := 16#20;
+	        #lang[1] := 16#20;
+	        IF LEN(#cfg.language) >= 1 THEN
+	            #lang[0] := CHAR_TO_BYTE(#cfg.language[1]);
+	        END_IF;
+	        IF LEN(#cfg.language) >= 2 THEN
+	            #lang[1] := CHAR_TO_BYTE(#cfg.language[2]);
+	        END_IF;
+	        #b := USINT_TO_BYTE(#cfg.units) AND 16#03;   // metrisch 0, imperiaal 1, US 2
+	        IF #b = 16#02 THEN
+	            #w := 16#0001;   // velden met enkel metrisch / imperiaal-US
+	        ELSE
+	            #w := BYTE_TO_WORD(#b);
+	        END_IF;
+	        #lang[2] := 16#0F OR SHL(IN := BOOL_TO_BYTE(#cfg.time12h), N := 4) OR SHL(IN := BOOL_TO_BYTE(NOT #cfg.decimalComma), N := 6);
+	        #lang[3] := USINT_TO_BYTE(#cfg.dateFormat);
+	        #lang[4] := #b OR SHL(IN := #b, N := 2) OR SHL(IN := WORD_TO_BYTE(#w), N := 4) OR SHL(IN := WORD_TO_BYTE(#w), N := 6);
+	        #lang[5] := #b OR SHL(IN := WORD_TO_BYTE(#w), N := 2) OR SHL(IN := WORD_TO_BYTE(#w), N := 4) OR SHL(IN := WORD_TO_BYTE(#w), N := 6);
+	        IF LEN(#cfg.country) >= 2 THEN
+	            #lang[6] := CHAR_TO_BYTE(#cfg.country[1]);
+	            #lang[7] := CHAR_TO_BYTE(#cfg.country[2]);
+	        END_IF;
+	        FOR #i := 0 TO 7 DO
+	            IF #lang[#i] <> #langLast[#i] THEN
+	                #sendNow[15] := TRUE;
+	            END_IF;
+	        END_FOR;
+
+	        FOR #k := 0 TO 35 DO
+	            // aan en periode per bericht
+	            #en := FALSE;
+	            #per := #cfg.periodFast;
+	            CASE #k OF
+	                0: #en := #cfg.sendEngine;
+	                1: #en := #cfg.sendWheelSpeed;
+	                2: #en := #cfg.sendGroundSpeed;
+	                3: #en := #cfg.sendSelectedSpeed;
+	                4: #en := #cfg.sendRearHitch;
+	                5: #en := #cfg.sendFrontHitch;
+	                6: #en := #cfg.sendRearPto;
+	                7: #en := #cfg.sendFrontPto;
+	                8: #en := #cfg.sendVehiclePosition;
+	                    #per := #cfg.periodNav;
+	                9: #en := #cfg.sendVehicleDirSpeed;
+	                    #per := #cfg.periodNav;
+	                10: #en := #cfg.sendTimeDate;
+	                    #per := #cfg.periodTimeDate;
+	                11: #en := #cfg.sendGnss;
+	                    #per := #cfg.periodGnssPosition;
+	                12: #en := #cfg.sendGnss;
+	                    #per := #cfg.periodGnssCogSog;
+	                13: #en := #cfg.sendGnss;
+	                    #per := #cfg.periodGnssData;
+	                14: #en := #cfg.sendStopState;
+	                    #per := #cfg.periodStopState;
+	                15: #en := #cfg.sendLanguage;   // enkel bij de start, op verzoek en bij een wijziging
+	                    #per := T#24D;
+	                16: #en := TRUE;   // Tractor Facilities Response: bij de start en op verzoek
+	                    #per := T#24D;
+	                20..35: #en := (SHR(IN := #cfg.auxValveMask, N := INT_TO_USINT(#k - 20)) AND 16#0001) <> 16#0000;
+	                    #per := #cfg.periodAux;
+	            END_CASE;
+	            IF NOT #en THEN
+	                #sendNow[#k] := FALSE;
+	            ELSE
+	                #due := #sendNow[#k] OR "TEC_Elapsed"(since := #tLast[#k], now := #now) >= #per;
+	                IF #due AND #q.count > 56 THEN   // geen plaats: later (voor 129029 zijn 7 frames nodig)
+	                    #diag.txLate := #diag.txLate + 1;
+	                ELSIF #due THEN
+	                    #d := #ff8;
+	                    #prio := 16#03;
+	                    #pgnTx := 16#0;
+	                    CASE #k OF
+	                        0:
+	                            #pgnTx := 16#F004;
+	                            "TEC_EncodeEngine"(e := #tractor.engine, d => #d);
+	                        1:
+	                            #pgnTx := 16#FE48;
+	                            "TEC_EncodeSpeed"(s := #tractor.wheelSpeed, kind := 0, d => #d);
+	                        2:
+	                            #pgnTx := 16#FE49;
+	                            "TEC_EncodeSpeed"(s := #tractor.groundSpeed, kind := 1, d => #d);
+	                        3:
+	                            #pgnTx := 16#F022;
+	                            "TEC_EncodeSpeed"(s := #tractor.selectedSpeed, kind := 2, d => #d);
+	                        4:
+	                            #pgnTx := 16#FE45;
+	                            "TEC_EncodeHitch"(h := #tractor.rearHitch, d => #d);
+	                        5:
+	                            #pgnTx := 16#FE46;
+	                            "TEC_EncodeHitch"(h := #tractor.frontHitch, d => #d);
+	                        6:
+	                            #pgnTx := 16#FE43;
+	                            "TEC_EncodePto"(p := #tractor.rearPto, d => #d);
+	                        7:
+	                            #pgnTx := 16#FE44;
+	                            "TEC_EncodePto"(p := #tractor.frontPto, d => #d);
+	                        8:  // Vehicle Position: 1e-7 °/bit, offset -210 °
+	                            #pgnTx := 16#FEF3;
+	                            #prio := 16#06;
+	                            #dw := "TEC_Raw32"(value := #tractor.vehiclePosition.latitude_deg, factor := 1.0E-7, offset := -210.0, ok := #tractor.vehiclePosition.positionOk);
+	                            FOR #i := 0 TO 3 DO
+	                                #d[#i] := DWORD_TO_BYTE(SHR(IN := #dw, N := INT_TO_USINT(8 * #i)));
+	                            END_FOR;
+	                            #dw := "TEC_Raw32"(value := #tractor.vehiclePosition.longitude_deg, factor := 1.0E-7, offset := -210.0, ok := #tractor.vehiclePosition.positionOk);
+	                            FOR #i := 0 TO 3 DO
+	                                #d[4 + #i] := DWORD_TO_BYTE(SHR(IN := #dw, N := INT_TO_USINT(8 * #i)));
+	                            END_FOR;
+	                        9:  // Vehicle Direction/Speed
+	                            #pgnTx := 16#FEE8;
+	                            #prio := 16#06;
+	                            #w := "TEC_Raw16"(value := #tractor.vehicleDirSpeed.heading_deg, factor := 0.0078125, offset := 0.0, ok := #tractor.vehicleDirSpeed.headingOk);
+	                            #d[0] := WORD_TO_BYTE(#w);
+	                            #d[1] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	                            #w := "TEC_Raw16"(value := #tractor.vehicleDirSpeed.speed_kmh, factor := 0.00390625, offset := 0.0, ok := #tractor.vehicleDirSpeed.speedOk);
+	                            #d[2] := WORD_TO_BYTE(#w);
+	                            #d[3] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	                            #w := "TEC_Raw16"(value := #tractor.vehicleDirSpeed.pitch_deg, factor := 0.0078125, offset := -200.0, ok := #tractor.vehicleDirSpeed.pitchOk);
+	                            #d[4] := WORD_TO_BYTE(#w);
+	                            #d[5] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	                            #w := "TEC_Raw16"(value := #tractor.vehicleDirSpeed.altitude_m, factor := 0.125, offset := -2500.0, ok := #tractor.vehicleDirSpeed.altitudeOk);
+	                            #d[6] := WORD_TO_BYTE(#w);
+	                            #d[7] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	                        10:  // Time/Date: UTC uit de PLC-klok, lokale verschuiving uit de lokale tijd
+	                            #pgnTx := 16#FEE6;
+	                            #prio := 16#06;
+	                            #r := RD_SYS_T(OUT => #utc);
+	                            #r := RD_LOC_T(OUT => #loc);
+	                            #offMin := (USINT_TO_INT(#loc.HOUR) * 60 + USINT_TO_INT(#loc.MINUTE)) - (USINT_TO_INT(#utc.HOUR) * 60 + USINT_TO_INT(#utc.MINUTE));
+	                            IF #offMin > 720 THEN
+	                                #offMin := #offMin - 1440;
+	                            ELSIF #offMin < -720 THEN
+	                                #offMin := #offMin + 1440;
+	                            END_IF;
+	                            #d[0] := INT_TO_BYTE(USINT_TO_INT(#utc.SECOND) * 4 + UDINT_TO_INT(#utc.NANOSECOND / 250000000));
+	                            #d[1] := USINT_TO_BYTE(#utc.MINUTE);
+	                            #d[2] := USINT_TO_BYTE(#utc.HOUR);
+	                            #d[3] := USINT_TO_BYTE(#utc.MONTH);
+	                            #d[4] := INT_TO_BYTE((USINT_TO_INT(#utc.DAY) - 1) * 4 + 1);
+	                            #d[5] := INT_TO_BYTE(UINT_TO_INT(#utc.YEAR) - 1985);
+	                            #d[6] := INT_TO_BYTE(#offMin MOD 60 + 125);
+	                            #d[7] := INT_TO_BYTE(#offMin / 60 + 125);
+	                        11:  // NMEA 2000 129025 Position Rapid Update: lat/lon int32, 1e-7 °
+	                            #pgnTx := 16#1F801;
+	                            #prio := 16#02;
+	                            IF #gnss.valid THEN
+	                                #dw := DINT_TO_DWORD(LREAL_TO_DINT(#gnss.latitude_deg * 1.0E7));
+	                            ELSE
+	                                #dw := 16#7FFFFFFF;
+	                            END_IF;
+	                            FOR #i := 0 TO 3 DO
+	                                #d[#i] := DWORD_TO_BYTE(SHR(IN := #dw, N := INT_TO_USINT(8 * #i)));
+	                            END_FOR;
+	                            IF #gnss.valid THEN
+	                                #dw := DINT_TO_DWORD(LREAL_TO_DINT(#gnss.longitude_deg * 1.0E7));
+	                            ELSE
+	                                #dw := 16#7FFFFFFF;
+	                            END_IF;
+	                            FOR #i := 0 TO 3 DO
+	                                #d[4 + #i] := DWORD_TO_BYTE(SHR(IN := #dw, N := INT_TO_USINT(8 * #i)));
+	                            END_FOR;
+	                        12:  // 129026 COG & SOG Rapid Update: COG 1e-4 rad, SOG 0,01 m/s, ten opzichte van het ware noorden
+	                            #pgnTx := 16#1F802;
+	                            #prio := 16#02;
+	                            #d[0] := #sid;
+	                            #d[1] := 16#FC;
+	                            #w := 16#FFFF;
+	                            IF #gnss.cogSogOk THEN
+	                                #w := DINT_TO_WORD(REAL_TO_DINT(#gnss.cog_deg * 0.017453292 * 10000.0));
+	                            END_IF;
+	                            #d[2] := WORD_TO_BYTE(#w);
+	                            #d[3] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	                            #w := 16#FFFF;
+	                            IF #gnss.cogSogOk THEN
+	                                #w := DINT_TO_WORD(REAL_TO_DINT(#gnss.sog_ms * 100.0));
+	                            END_IF;
+	                            #d[4] := WORD_TO_BYTE(#w);
+	                            #d[5] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	                        13:  // 129029 GNSS Position Data: 43 bytes als fast packet (7 frames), datum en tijd uit de PLC-klok (UTC)
+	                            #prio := 16#03;
+	                            #sid := INT_TO_BYTE((BYTE_TO_INT(#sid) + 1) MOD 253);
+	                            #r := RD_SYS_T(OUT => #utc);
+	                            #gbuf[0] := #sid;
+	                            #di := "TEC_DaysSince1970"(year := UINT_TO_DINT(#utc.YEAR), month := USINT_TO_DINT(#utc.MONTH), day := USINT_TO_DINT(#utc.DAY));
+	                            #gbuf[1] := DINT_TO_BYTE(#di);
+	                            #gbuf[2] := DWORD_TO_BYTE(SHR(IN := DINT_TO_DWORD(#di), N := 8));
+	                            #dw := UDINT_TO_DWORD((USINT_TO_UDINT(#utc.HOUR) * 3600 + USINT_TO_UDINT(#utc.MINUTE) * 60 + USINT_TO_UDINT(#utc.SECOND)) * 10000
+	                                                  + #utc.NANOSECOND / 100000);
+	                            FOR #i := 0 TO 3 DO
+	                                #gbuf[3 + #i] := DWORD_TO_BYTE(SHR(IN := #dw, N := INT_TO_USINT(8 * #i)));
+	                            END_FOR;
+	                            FOR #n := 0 TO 2 DO   // breedte, lengte (1e-16 °) en hoogte (1e-6 m), int64
+	                                IF #n = 0 AND #gnss.valid THEN
+	                                    #li := LREAL_TO_LINT(#gnss.latitude_deg * 1.0E16);
+	                                ELSIF #n = 1 AND #gnss.valid THEN
+	                                    #li := LREAL_TO_LINT(#gnss.longitude_deg * 1.0E16);
+	                                ELSIF #n = 2 AND #gnss.valid AND #gnss.altitudeOk THEN
+	                                    #li := LREAL_TO_LINT(#gnss.altitude_m * 1.0E6);
+	                                ELSE
+	                                    #li := 0;
+	                                END_IF;
+	                                IF #n = 2 AND NOT (#gnss.valid AND #gnss.altitudeOk) OR #n < 2 AND NOT #gnss.valid THEN
+	                                    #lw := 16#7FFFFFFFFFFFFFFF;   // niet beschikbaar
+	                                ELSE
+	                                    #lw := LINT_TO_LWORD(#li);
+	                                END_IF;
+	                                FOR #i := 0 TO 7 DO
+	                                    #gbuf[7 + 8 * #n + #i] := LWORD_TO_BYTE(SHR(IN := #lw, N := INT_TO_USINT(8 * #i)));
+	                                END_FOR;
+	                            END_FOR;
+	                            IF #gnss.valid THEN
+	                                #gbuf[31] := (USINT_TO_BYTE(#gnss.gnssType) AND 16#0F) OR SHL(IN := USINT_TO_BYTE(#gnss.method) AND 16#0F, N := 4);
+	                            ELSE
+	                                #gbuf[31] := USINT_TO_BYTE(#gnss.gnssType) AND 16#0F;   // methode 0 = geen fix
+	                            END_IF;
+	                            #gbuf[32] := 16#FC;   // geen integriteitscontrole
+	                            #gbuf[33] := USINT_TO_BYTE(#gnss.satellites);
+	                            #w := INT_TO_WORD(REAL_TO_INT(#gnss.hdop * 100.0));
+	                            #gbuf[34] := WORD_TO_BYTE(#w);
+	                            #gbuf[35] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	                            #w := INT_TO_WORD(REAL_TO_INT(#gnss.pdop * 100.0));
+	                            #gbuf[36] := WORD_TO_BYTE(#w);
+	                            #gbuf[37] := WORD_TO_BYTE(SHR(IN := #w, N := 8));
+	                            #dw := DINT_TO_DWORD(REAL_TO_DINT(#gnss.geoidalSeparation_m * 100.0));
+	                            FOR #i := 0 TO 3 DO
+	                                #gbuf[38 + #i] := DWORD_TO_BYTE(SHR(IN := #dw, N := INT_TO_USINT(8 * #i)));
+	                            END_FOR;
+	                            #gbuf[42] := 16#00;   // geen referentiestations
+	                            // fast packet: frame 0 = volgnummer/teller, lengte, 6 bytes; frames 1..6 = teller, 7 bytes
+	                            #fpSeq := INT_TO_BYTE((BYTE_TO_INT(#fpSeq) + 1) MOD 8);
+	                            FOR #n := 0 TO 6 DO
+	                                #d := #ff8;
+	                                #d[0] := SHL(IN := #fpSeq, N := 5) OR INT_TO_BYTE(#n);
+	                                IF #n = 0 THEN
+	                                    #d[1] := 16#2B;   // 43 bytes
+	                                    FOR #i := 0 TO 5 DO
+	                                        #d[2 + #i] := #gbuf[#i];
+	                                    END_FOR;
+	                                ELSE
+	                                    FOR #i := 0 TO 6 DO
+	                                        IF 6 + 7 * (#n - 1) + #i <= 42 THEN
+	                                            #d[1 + #i] := #gbuf[6 + 7 * (#n - 1) + #i];
+	                                        END_IF;
+	                                    END_FOR;
+	                                END_IF;
+	                                #ok := "TEC_Push"(id := 16#0DF80500 OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q);
+	                            END_FOR;
+	                        14:  // All Implements Stop Operations Switch State: 0 = stop, 1 = toegelaten
+	                            #pgnTx := 16#FD02;
+	                            #d[6] := #stopTransitions;
+	                            #d[7] := 16#FC OR BOOL_TO_BYTE(NOT #stopOperations);
+	                        15:  // Language Command (opgebouwd hierboven)
+	                            #pgnTx := 16#FE0F;
+	                            #prio := 16#06;
+	                            #d := #lang;
+	                            #langLast := #lang;
+	                        16:  // Tractor Facilities Response: klasse en faciliteiten, afgeleid uit cfg
+	                            #pgnTx := 16#FE09;
+	                            #d[0] := SHL(IN := INT_TO_BYTE(LIMIT(MN := 1, IN := USINT_TO_INT(#cfg.tecuClass), MX := 3) - 1), N := 6)
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendWheelSpeed), N := 5)   // sleutelstand
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendWheelSpeed), N := 4)   // max. tijd tractorvoeding
+	                                     OR 16#08   // Maintain Power
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendWheelSpeed), N := 2)
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendGroundSpeed), N := 1)
+	                                     OR BOOL_TO_BYTE(#cfg.sendEngine);
+	                            #d[1] := SHL(IN := BOOL_TO_BYTE(#cfg.sendRearHitch), N := 7)   // positie
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendRearHitch), N := 6)   // in werkstand
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendRearPto), N := 5)   // toerental
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendRearPto), N := 4)   // ingeschakeld
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendLanguage), N := 2);   // Language Command (bit 4 verlichting: nee)
+	                            #d[2] := SHL(IN := BOOL_TO_BYTE(#cfg.sendTimeDate), N := 7)
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendGroundSpeed), N := 6)   // afstand
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendGroundSpeed), N := 5)   // richting
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendWheelSpeed), N := 4)
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendWheelSpeed), N := 3)
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.sendRearHitch), N := 2)   // trekkracht
+	                                     OR BOOL_TO_BYTE(#cfg.auxValveMask <> 16#0000);   // status aux-ventielen
+	                            #d[3] := SHL(IN := BOOL_TO_BYTE(#cfg.limitStatusReporting), N := 3);
+	                            IF #cfg.tecuClass >= 3 THEN
+	                                #d[3] := #d[3] OR 16#E0 OR SHL(IN := BOOL_TO_BYTE(#cfg.auxValveMask <> 16#0000), N := 4);
+	                            END_IF;
+	                            #d[4] := SHL(IN := BOOL_TO_BYTE(#cfg.addendumN AND #cfg.sendGnss), N := 7)
+	                                     OR SHL(IN := BOOL_TO_BYTE(#cfg.addendumN AND (#cfg.sendGnss OR #cfg.sendVehiclePosition)), N := 6);
+	                            #d[5] := 16#00;
+	                            IF #cfg.addendumF THEN
+	                                #d[5] := SHL(IN := BOOL_TO_BYTE(#cfg.sendFrontHitch), N := 7)
+	                                         OR SHL(IN := BOOL_TO_BYTE(#cfg.sendFrontHitch), N := 6)
+	                                         OR SHL(IN := BOOL_TO_BYTE(#cfg.sendFrontPto), N := 5)
+	                                         OR SHL(IN := BOOL_TO_BYTE(#cfg.sendFrontPto), N := 4)
+	                                         OR SHL(IN := BOOL_TO_BYTE(#cfg.sendFrontHitch), N := 3);
+	                                IF #cfg.tecuClass >= 3 THEN
+	                                    #d[5] := #d[5] OR 16#07;   // opdrachten voorhef, toerental en inschakelen voorste aftakas
+	                                END_IF;
+	                            END_IF;
+	                            #d[6] := 16#00;
+	                            #d[7] := 16#00;
+	                        20..35:
+	                            #pgnTx := DINT_TO_DWORD(65020 + INT_TO_DINT(#k));
+	                            "TEC_EncodeAux"(v := #tractor.auxValveFlow[#k - 20], d => #d);
+	                    END_CASE;
+	                    IF #pgnTx <> 16#0 THEN   // één frame
+	                        #ok := "TEC_Push"(id := SHL(IN := #prio, N := 26) OR SHL(IN := #pgnTx, N := 8) OR BYTE_TO_DWORD(#myAddress), data := #d, q := #q);
+	                    END_IF;
+	                    #tLast[#k] := #now;
+	                    #sendNow[#k] := FALSE;
+	                END_IF;
+	            END_IF;
+	        END_FOR;
+	    END_IF;
+	END_REGION
+
+	REGION Zenden (één frame per twee aanroepen)
+	    CASE #txState OF
+	        0:
+	            IF #q.count > 0 THEN
+	                #txId := #q.frame[#q.head].id;
+	                #txData := #q.frame[#q.head].data;
+	                #txExec := TRUE;
+	                #tTx := #now;
+	                #txState := 1;
+	            END_IF;
+	        1:
+	            IF #snd.done OR #snd.error THEN
+	                IF #snd.error THEN
+	                    #diag.sendStatus := #snd.status;
+	                ELSE
+	                    #diag.txFrames := #diag.txFrames + 1;
+	                END_IF;
+	                #q.head := (#q.head + 1) MOD 64;
+	                #q.count := #q.count - 1;
+	                #txExec := FALSE;   // één aanroep FALSE, de volgende start het volgende frame
+	                #txState := 0;
+	            ELSIF "TEC_Elapsed"(since := #tTx, now := #now) > T#1S THEN   // proxy antwoordt niet: frame opgeven
+	                #diag.sendTimeouts := #diag.sendTimeouts + 1;
+	                #q.head := (#q.head + 1) MOD 64;
+	                #q.count := #q.count - 1;
+	                #txExec := FALSE;
+	                #txState := 0;
+	            END_IF;
+	    END_CASE;
+
+	    #snd(execute := #txExec,
+	         messageIdFormat := TRUE,
+	         messageId := #txId,
+	         rtrFrame := FALSE,
+	         canModulStatusByte := #canStatus,
+	         deviceType := FALSE,
+	         inputArea := #txProxyIn,
+	         outputArea := #txProxyOut,
+	         messageData := #txData);
+
+	    IF #st = 0 THEN
+	        #txExec := FALSE;
+	        #txState := 0;
+	    END_IF;
+	END_REGION
+
+	REGION Uitgangen
+	    #running := #st = 10;
+	    #error := #st >= 900;
+	    #state := #st;
+	    CASE #st OF
+	        0: #diag.stateText := 'uit';
+	        1, 2: #diag.stateText := 'adres claimen';
+	        10: #diag.stateText := 'actief (tractor-ECU)';
+	        909: #diag.stateText := 'fout: adres verloren (Cannot Claim)';
+	        ELSE
+	            #diag.stateText := '';
+	    END_CASE;
+	END_REGION
+END_FUNCTION_BLOCK

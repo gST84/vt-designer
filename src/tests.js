@@ -373,7 +373,7 @@ export function runTests(log = (s) => console.log(s)) {
   const fbSrc = [
     '// kop van het bestand',
     'FUNCTION_BLOCK "X"', "TITLE = 'Test - versie 1.0'", "{ S7_Optimized_Access := 'TRUE' }", 'VERSION : 1.0', '//x versie 1.0',
-    '   VAR_INPUT', '      a : Byte;   // ingang', '      txt : String[10];', '      hwIdCmCan : HW_IO;', '      canStatus : Byte;', '   END_VAR',
+    '   VAR_INPUT', '      a : Byte;   // ingang', '      txt : String[10];', '      hwIdCmCan : HW_IO;', '      canStatus : Byte;', '      rxProxyIndex : Byte := 2;', '   END_VAR',
     '   VAR_IN_OUT', '      rxProxyIn : "LCan_typeRcvInTransparentMessage";', '      rxProxyOut : "LCan_typeRcvOutTransparentMessage";', '   END_VAR',
     '   VAR', '      st : Int;', '      buf : Array[0..3] of Char;', '      t : String;', '      ff : Array[0..7] of Byte := [8(16#FF)];', '      rcv : "LCan_RcvTransparentMessage";', '   END_VAR',
     'BEGIN', '\tREGION Iets',
@@ -390,8 +390,15 @@ export function runTests(log = (s) => console.log(s)) {
     && fbObj.impl.includes('TIME_TO_DINT(TIME())'));
   check('CODESYS: strings untouched, REGION as comment', fbObj.impl.includes(`txt := 'a#b "c" $'x';`) && fbObj.impl.includes('// ---- Iets') && !/REGION/.test(fbObj.impl));
   check('CODESYS: declarations', ['step : INT;', 'buf : ARRAY[0..3] OF BYTE;', 't : STRING(254);', 'txt : STRING(10);', 'ff : ARRAY[0..7] OF BYTE := [8(16#FF)];',
-    'canNet : USINT := 0;', 'a : BYTE;\t// ingang', '// kop van het bestand'].every((x) => fbObj.decl.includes(x)) && !/canStatus|rxProxyIn|HW_IO|"/.test(fbObj.decl.replace(/\/\/.*$/gm, '')));
+    'canNet : USINT := 0;', 'a : BYTE;\t// ingang', '// kop van het bestand'].every((x) => fbObj.decl.includes(x)) && !/canStatus|rxProxyIn\b|HW_IO|"/.test(fbObj.decl.replace(/\/\/.*$/gm, '')));
   check('CODESYS: CM CAN parameters become the CL2 layer', fbObj.impl.includes('netId := canNet,') && fbObj.impl.includes('proxyIndex := rxProxyIndex,') && !/inputArea|canModulStatusByte/.test(fbObj.impl));
+  const [noHw] = translateScl(['FUNCTION_BLOCK "Y"', '   VAR_INPUT', '      canStatus : Byte;', '   END_VAR',
+    '   VAR_IN_OUT', '      rxProxyIn : "LCan_typeRcvInTransparentMessage";', '      rxProxyOut : "LCan_typeRcvOutTransparentMessage";', '   END_VAR',
+    '   VAR', '      rcv : "LCan_RcvTransparentMessage";', '      b : Array[0..7] of Byte;', '   END_VAR', 'BEGIN',
+    '\t    #rcv(enable := TRUE,', '\t         canModulStatusByte := #canStatus,', '\t         inputArea := #rxProxyIn,', '\t         outputArea := #rxProxyOut,',
+    '\t         messageData := #b);', 'END_FUNCTION_BLOCK'].join('\n'), '9.9');
+  check('CODESYS: without hwIdCmCan the status byte becomes canNet, without rxProxyIndex no filter list',
+    noHw.decl.includes('canNet : USINT := 0;') && noHw.impl.includes('netId := canNet,') && !/proxyIndex|outputArea|canStatus/.test(noHw.impl + noHw.decl));
   check('CODESYS: parsed interface', fbObj.sections.map((s) => s.kind).join() === 'VAR_INPUT,VAR' && fbObj.sections[1].vars.some((v) => v.name === 'step' && v.type === 'INT'));
   check('CODESYS: initial values', valueText(parseValue('[8(16#FF)]')) === '[8(16#FF)]' && parseValue("(a := 1, b := 'x;y')").members[1].value.text === "'x;y'");
 
