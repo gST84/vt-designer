@@ -24,6 +24,7 @@ met *Opslaan* krijg je een `.vtd.json`-bestand. *Openen* leest zo'n bestand of e
 | TIA Portal | `<DB>.db` | DB-bron: `data` (Array of Byte), `size`, `chunkCount/chunkStart/chunkLength`, `id.<naam>`, `textLength.<naam>` |
 | CODESYS | `<GVL>.st` | GVL-tekst: `Pool`, `POOL_SIZE`, `ChunkStart/ChunkLength`, constanten `ID_<naam>` / `LEN_<naam>` |
 | CODESYS | `<GVL>.xml` | dezelfde GVL als PLCopen XML |
+| CODESYS | `<project>_CODESYS.xml` | alles voor `VT_Client`/`TC_Client`, vertaald uit de TIA-bronnen; zie [`isobus_project_bundle/codesys`](isobus_project_bundle/codesys) |
 | Overig | `.iop`, listing | de binaire pool, en een uitleg byte per byte |
 
 De pool wordt opgedeeld in delen van hele objecten van max. 1784 bytes (één TP-overdracht per

@@ -7,7 +7,8 @@ import { COMMANDS, decodeCommand, encodeCommand, defaultsFor, splitCommands, joi
 import { addObject, newProject, normalizeProject, projectFromObjects, renumber, deleteObject } from './model.js';
 import { validate } from './iso/validate.js';
 import { tiaSource } from './export/tia.js';
-import { codesysGvl, codesysXml } from './export/codesys.js';
+import { codesysGvl, codesysXml, codesysProjectObjects, plcopenXml } from './export/codesys.js';
+import { translateScl, parseValue, valueText, parseStObjects, stText, mask } from './export/scl2st.js';
 import { listing } from './export/listing.js';
 import { ioPlan, tiaIoDb, tiaIoMap, inIo } from './export/io.js';
 import { zip, crc32, utf8 } from './zip.js';
@@ -16,7 +17,7 @@ import { encodeObject as ddopObject, parseDdop, checkDdop } from './tc/ddop.js';
 import { buildDdop, poolForSections, sectionY, DDI, kindOf, KIND_CHOICES } from './tc/build.js';
 import { tiaTcPool, ddopListing } from './export/tcpool.js';
 import { tiaTcIo, tiaTcIoMap, realLit } from './export/tcio.js';
-import { APP_VERSION, sclText } from './export/common.js';
+import { APP_VERSION, sclText, buildExport } from './export/common.js';
 
 /** The 119 bytes of vt_test_project/VT_TestPool.iop (from pool_listing.txt). */
 const TEST_POOL = `
@@ -367,6 +368,56 @@ export function runTests(log = (s) => console.log(s)) {
     check(`TC-interface ${nm}: één tabelregel per procesdata`, (io.match(/sys\.pd\[\d+\]\.element := /g) || []).length === tb2.pd.length && io.includes(`pd : Array[0..${tb2.pd.length - 1}] of "typeTcPd";`));
   }
   check('REAL-literals voor SCL', realLit(10) === '10.0' && realLit(0.01) === '0.01' && realLit(0.0001) === '1.0E-4' && realLit(1e-7) === '1.0E-7');
+
+  // 13. CODESYS: translation of SCL (blocks, UDTs, DBs) and the PLCopen XML
+  const fbSrc = [
+    '// kop van het bestand',
+    'FUNCTION_BLOCK "X"', "TITLE = 'Test - versie 1.0'", "{ S7_Optimized_Access := 'TRUE' }", 'VERSION : 1.0', '//x versie 1.0',
+    '   VAR_INPUT', '      a : Byte;   // ingang', '      txt : String[10];', '      hwIdCmCan : HW_IO;', '      canStatus : Byte;', '   END_VAR',
+    '   VAR_IN_OUT', '      rxProxyIn : "LCan_typeRcvInTransparentMessage";', '      rxProxyOut : "LCan_typeRcvOutTransparentMessage";', '   END_VAR',
+    '   VAR', '      st : Int;', '      buf : Array[0..3] of Char;', '      t : String;', '      ff : Array[0..7] of Byte := [8(16#FF)];', '      rcv : "LCan_RcvTransparentMessage";', '   END_VAR',
+    'BEGIN', '\tREGION Iets',
+    '\t    #st := WORD_TO_INT(SHL(IN := BYTE_TO_WORD(#a), N := SHR(IN := 16#10, N := 1)));   // "x" #y',
+    '\t    #buf[0] := BYTE_TO_CHAR(#a);', '\t    #a := CHAR_TO_BYTE(#t[#st + 1]);',
+    '\t    #st := LOWER_BOUND(ARR := #buf, DIM := 1) + DINT_TO_INT(TIME_TO_DINT(TIME_TCK()));', "\t    #txt := 'a#b \"c\" $'x';",
+    '\t    #rcv(enable := TRUE,', '\t         canModulStatusByte := #canStatus,', '\t         inputArea := #rxProxyIn,', '\t         outputArea := #rxProxyOut,', '\t         messageData := #ff);',
+    '\tEND_REGION', 'END_FUNCTION_BLOCK'].join('\n');
+  const [fbObj] = translateScl(fbSrc, '9.9');
+  check('CODESYS: SHL/SHR, #, quotes and reserved names translated',
+    fbObj.impl.includes('step := WORD_TO_INT(SHL(BYTE_TO_WORD(a), SHR(16#10, 1)));   // "x" #y'), fbObj.impl.split('\n')[1]);
+  check('CODESYS: Char, String index from 0, LOWER_BOUND, TIME()',
+    fbObj.impl.includes('buf[0] := (a);') && fbObj.impl.includes('a := t[(step + 1) - 1];') && fbObj.impl.includes('LOWER_BOUND(buf, 1)')
+    && fbObj.impl.includes('TIME_TO_DINT(TIME())'));
+  check('CODESYS: strings untouched, REGION as comment', fbObj.impl.includes(`txt := 'a#b "c" $'x';`) && fbObj.impl.includes('// ---- Iets') && !/REGION/.test(fbObj.impl));
+  check('CODESYS: declarations', ['step : INT;', 'buf : ARRAY[0..3] OF BYTE;', 't : STRING(254);', 'txt : STRING(10);', 'ff : ARRAY[0..7] OF BYTE := [8(16#FF)];',
+    'canNet : USINT := 0;', 'a : BYTE;\t// ingang', '// kop van het bestand'].every((x) => fbObj.decl.includes(x)) && !/canStatus|rxProxyIn|HW_IO|"/.test(fbObj.decl.replace(/\/\/.*$/gm, '')));
+  check('CODESYS: CM CAN parameters become the CL2 layer', fbObj.impl.includes('netId := canNet,') && fbObj.impl.includes('proxyIndex := rxProxyIndex,') && !/inputArea|canModulStatusByte/.test(fbObj.impl));
+  check('CODESYS: parsed interface', fbObj.sections.map((s) => s.kind).join() === 'VAR_INPUT,VAR' && fbObj.sections[1].vars.some((v) => v.name === 'step' && v.type === 'INT'));
+  check('CODESYS: initial values', valueText(parseValue('[8(16#FF)]')) === '[8(16#FF)]' && parseValue("(a := 1, b := 'x;y')").members[1].value.text === "'x;y'");
+
+  const pcs = newProject('CS');
+  pcs.implement.enabled = true;
+  const csObjs = codesysProjectObjects(pcs);
+  const csGvl = (n) => csObjs.find((o) => o.kind === 'gvl' && o.name === n);
+  const csPool = buildExport(pcs);
+  check('CODESYS: GVLs VT_Pool, VT_Io, TC_Pool, TC_Io and the functions', ['VT_Pool', 'VT_Io', 'TC_Pool', 'TC_Io'].every((n) => csGvl(n))
+    && ['VT_IoMap', 'TC_IoMap'].every((n) => csObjs.some((o) => o.kind === 'pou' && o.name === n && o.ret === 'BOOL')));
+  const poolData = csGvl('VT_Pool').vars.find((v) => v.name === 'data');
+  check('CODESYS: VT_Pool.data with every byte as start value', poolData.type === `ARRAY[0..${csPool.size - 1}] OF BYTE` && poolData.init.items.length === csPool.size);
+  const ioSys = csGvl('VT_Io').vars.find((v) => v.name === 'sys');
+  const plan = ioPlan(pcs);
+  check('CODESYS: VT_Io.sys tables initialised per object', ioSys.type === 'VT_Io_sys'
+    && ['num', 'str', 'flag', 'key'].every((t) => (ioSys.init.members.find((m) => m.name === t)?.value.items.length ?? 0) === Math.max(1, plan.tables[t].length)));
+  check('CODESYS: a DUT per inline Struct', ['VT_Io_status', 'VT_Io_out', 'VT_Io_in', 'VT_Io_sys', 'VT_Pool_id', 'TC_Io_par', 'TC_Io_sys'].every((n) => csObjs.some((o) => o.kind === 'dut' && o.name === n)));
+  check('CODESYS: TC_Pool.info as struct initialisation', /info : typeTcPoolInfo := \(size := \d+, maxSections := 8,/.test(csGvl('TC_Pool').decl));
+  check('CODESYS: no SCL left in the project objects', csObjs.every((o) => !/(^|[^0-9A-Za-z_])#[A-Za-z_]|"[A-Za-z_]|\bREGION\b|IN :=/.test(mask(o.decl + (o.impl || '')).text)));
+  const round = parseStObjects(stText(csObjs));
+  check('CODESYS: ST text read back', round.length === csObjs.length && round.every((o, i) => o.kind === csObjs[i].kind && o.name === csObjs[i].name));
+  const csXml = plcopenXml(csObjs, 'CS');
+  const countTag = (t) => (csXml.match(new RegExp(`<${t}[ >]`, 'g')) || []).length;
+  check('CODESYS: PLCopen XML with every object', countTag('pou') === 2 && countTag('dataType') === csObjs.filter((o) => o.kind === 'dut').length
+    && countTag('globalVars') === 4 && countTag('InterfaceAsPlainText') === 2 && !/[\u0001\u0002\u0003]/.test(csXml));
+  check('CODESYS: version in every object', csObjs.every((o) => o.decl.includes(`VT Designer ${APP_VERSION}`)));
 
   // 11. zip for the TIA download (stored files)
   check('CRC-32 van "hello"', crc32(utf8('hello')) === 0x3610a686);

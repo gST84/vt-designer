@@ -3,7 +3,7 @@ import { h, download, fileBase } from '../util.js';
 import { encodePool } from '../iso/codec.js';
 import { validate } from '../iso/validate.js';
 import { tiaSource } from '../export/tia.js';
-import { codesysGvl, codesysXml } from '../export/codesys.js';
+import { codesysGvl, codesysXml, codesysProjectObjects, codesysBlockObjects, plcopenXml, stText, stHeader } from '../export/codesys.js';
 import { listing } from '../export/listing.js';
 import { tiaIoDb, tiaIoMap } from '../export/io.js';
 import { sanitizeName, label } from '../model.js';
@@ -16,12 +16,13 @@ import { modal, toast } from './dialogs.js';
 const BUNDLES = {
   vt: { dir: 'isobus_project_bundle/vt_client/', files: ['01_VTC_Types.udt', '02_VT_Client.scl', 'README.md'], fb: 'VT_Client' },
   tc: { dir: 'isobus_project_bundle/tc_client/', files: ['01_TCC_Types.udt', '02_TC_Client.scl', 'README.md'], fb: 'TC_Client' },
+  cs: { dir: 'isobus_project_bundle/codesys/', files: ['LCan_CL2.st', 'README.md'] },
 };
 const FB_GITHUB = 'https://github.com/gST84/vt-designer/tree/main/isobus_project_bundle';
 
 const SECTIONS = [
   { key: 'tia', label: 'TIA Portal', fields: ['tiaDb', 'ioDb', 'tcDb', 'tcIoDb', 'chunk'] },
-  { key: 'codesys', label: 'CODESYS', fields: ['codesysGvl', 'chunk'] },
+  { key: 'codesys', label: 'CODESYS', fields: ['tiaDb', 'ioDb', 'tcDb', 'tcIoDb', 'codesysGvl', 'chunk'] },
   { key: 'general', label: 'Algemeen', fields: [] },
 ];
 
@@ -37,6 +38,15 @@ const tcFiles = (p) => [
   { name: `${p.export.tcIoDb}Map.scl`, data: tiaTcIoMap(p) },
 ];
 const renamed = (f, name) => ({ ...f, name });
+const textOf = (f) => new TextDecoder().decode(f.data);
+/** CODESYS: the CAN layer and the translated VT_Client (and TC_Client) from the fetched sources, then the project. */
+const codesysAll = (p, fb) => [
+  ...codesysBlockObjects({
+    lcan: textOf(fb.cs[0]), vtUdt: textOf(fb.vt[0]), vtScl: textOf(fb.vt[1]),
+    ...(p.implement.enabled ? { tcUdt: textOf(fb.tc[0]), tcScl: textOf(fb.tc[1]) } : {}),
+  }),
+  ...codesysProjectObjects(p),
+];
 const importOrder = (p) => [
   `Importvolgorde in TIA Portal: 01_VTC_Types.udt → ${tiaFiles(p).map((f) => f.name).join(' → ')} → 02_VT_Client.scl`,
   ...(p.implement.enabled ? [`Task controller: 01_TCC_Types.udt → ${tcFiles(p).map((f) => f.name).join(' → ')} → 02_TC_Client.scl`] : []),
@@ -65,10 +75,17 @@ const TARGETS = [
     zip: (p, fb) => [fb.vt[0], ...tiaFiles(p), fb.vt[1], renamed(fb.vt[2], 'README_VT_Client.md'),
       ...(p.implement.enabled ? [fb.tc[0], ...tcFiles(p), fb.tc[1], renamed(fb.tc[2], 'README_TC_Client.md')] : [])],
     hint: "Pool-DB, interface-DB, koppel-FC en de FB's van GitHub in één zip; met een werktuig ook alles voor TC_Client." },
-  { key: 'gvl', section: 'codesys', label: 'GVL-tekst', file: (p) => `${p.export.codesysGvl}.st`, text: codesysGvl,
-    hint: 'Application › Object toevoegen › Globale variabelenlijst met dezelfde naam, en de tekst als declaratie plakken.' },
-  { key: 'xml', section: 'codesys', label: 'PLCopen XML', file: (p) => `${p.export.codesysGvl}.xml`, text: codesysXml,
-    hint: 'Project › PLCopenXML importeren. Hier zijn de ID\'s gewone variabelen (in de GVL-tekst zijn het constanten).' },
+  { key: 'csall', section: 'codesys', label: 'Alles', file: (p) => `${fileBase(p.name)}_CODESYS.xml`, fetched: (p, fb) => plcopenXml(codesysAll(p, fb), p.name),
+    hint: 'Eén PLCopen XML voor Project › PLCopenXML importeren: de CAN-laag LCan_CL2, VT_Client (met een werktuig ook TC_Client), vertaald uit de TIA-bronnen van GitHub, en pool, interface en koppelfunctie(s). Voeg in CODESYS de bibliotheek "CAA CanL2" toe; zie README_CODESYS.md in de ST-zip.' },
+  { key: 'csproj', section: 'codesys', label: 'Pool en interface', file: (p) => `${fileBase(p.name)}_CODESYS_project.xml`, text: (p) => plcopenXml(codesysProjectObjects(p), p.name),
+    hint: 'Enkel wat bij dit ontwerp hoort: VT_Pool, VT_Io en VT_IoMap (met een werktuig ook TC_Pool, TC_Io en TC_IoMap). Na een wijziging van het ontwerp opnieuw importeren en de bestaande objecten vervangen.' },
+  { key: 'csst', section: 'codesys', label: 'Alles als ST-tekst', file: (p) => `${fileBase(p.name)}_CODESYS_st.zip`, bundle: 'cs',
+    zip: (p, fb) => [{ name: `${fileBase(p.name)}_CODESYS.st`, data: stText(codesysAll(p, fb), stHeader(`"${p.name}"`)) }, renamed(fb.cs[1], 'README_CODESYS.md')],
+    hint: 'Dezelfde objecten als tekst, als de XML-import niet lukt: per object de declaratie en de code om in CODESYS te plakken.' },
+  { key: 'gvl', section: 'codesys', label: 'Enkel de pool (GVL-tekst)', file: (p) => `${p.export.codesysGvl}.st`, text: codesysGvl,
+    hint: 'Enkel de pool, voor een eigen ISOBUS-client (niet voor VT_Client: gebruik dan Alles). Application › Object toevoegen › Globale variabelenlijst met dezelfde naam, en de tekst als declaratie plakken.' },
+  { key: 'xml', section: 'codesys', label: 'Enkel de pool (XML)', file: (p) => `${p.export.codesysGvl}.xml`, text: codesysXml,
+    hint: 'Enkel de pool, voor een eigen ISOBUS-client, als PLCopen XML. Hier zijn de ID\'s gewone variabelen (in de GVL-tekst zijn het constanten).' },
   { key: 'iop', section: 'general', label: 'Object pool', file: (p) => `${fileBase(p.name)}.iop`, binary: true,
     hint: 'De binaire pool, zoals een VT ze ontvangt. Voor pool-viewers en ISOBUS-bibliotheken die een .iop-bestand inlezen.' },
   { key: 'lst', section: 'general', label: 'Listing', file: (p) => `${fileBase(p.name)}_listing.txt`, text: listing,
@@ -114,7 +131,7 @@ export async function exportDialog(store, initial = 'tia') {
         if (!r.ok) throw new Error(`${b.dir}${name}: HTTP ${r.status}`);
         return { name, data: new Uint8Array(await r.arrayBuffer()) };
       }));
-      fbFiles = { vt: await get(BUNDLES.vt), tc: p().implement.enabled ? await get(BUNDLES.tc) : [] };
+      fbFiles = { vt: await get(BUNDLES.vt), tc: p().implement.enabled ? await get(BUNDLES.tc) : [], cs: await get(BUNDLES.cs) };
     }
     return fbFiles;
   }
@@ -170,7 +187,18 @@ export async function exportDialog(store, initial = 'tia') {
     const no = ++loadNo;
     content = '';
     try {
-      if (target.zip) {
+      if (target.fetched) {
+        area.value = "FB's ophalen en vertalen…";
+        const t = target;
+        fetchFb().then((fb) => {
+          if (no !== loadNo) return;
+          try { content = t.fetched(p(), fb); } catch (e) { area.value = 'Export mislukt: ' + e.message; return; }
+          area.value = content;
+        }).catch((e) => {
+          if (no !== loadNo) return;
+          area.value = `De FB's konden niet opgehaald worden (${e.message}).\nHaal ze zelf op: ${FB_GITHUB}`;
+        });
+      } else if (target.zip) {
         area.value = "FB's ophalen…";
         const t = target;
         fetchFb().then((fb) => {
@@ -179,11 +207,11 @@ export async function exportDialog(store, initial = 'tia') {
           try { files = t.zip(p(), fb); } catch (e) { area.value = 'Export mislukt: ' + e.message; return; }
           content = zip(files);
           const set = fb[t.bundle || 'vt'];
-          const readme = new TextDecoder().decode(set[2].data);
+          const readme = new TextDecoder().decode(set[set.length - 1].data);
           const ver = (b) => fb[b][1] ? fbVersion(fb[b][1], BUNDLES[b].fb) : '';
           const note = (f) => (f === fb.vt[1] ? ver('vt') : fb.tc[1] && f === fb.tc[1] ? ver('tc') : '');
           area.value = [t.file(p()), ...files.map((f) => `  ${f.name.padEnd(28)} ${String(size(f)).padStart(7)} bytes${note(f) ? `   FB ${f === fb.vt[1] ? 'VT_Client' : 'TC_Client'} versie ${note(f)}` : ''}`), '',
-            importOrder(p()), '', '— README.md —', '', readme].join('\n');
+            ...(t.section === 'tia' ? [importOrder(p()), ''] : []), '— README.md —', '', readme].join('\n');
         }).catch((e) => {
           if (no !== loadNo) return;
           area.value = `De FB's konden niet opgehaald worden (${e.message}).\nHaal ze zelf op: ${FB_GITHUB}`;
@@ -214,7 +242,8 @@ export async function exportDialog(store, initial = 'tia') {
     onButton: async (v) => {
       if (v === 'download') {
         if (!content || (target.zip && typeof content === 'string')) { toast('Nog niet klaar of niet beschikbaar.'); return false; }
-        download(target.file(p()), content, target.zip ? 'application/zip' : target.binary ? 'application/octet-stream' : 'text/plain;charset=utf-8');
+        download(target.file(p()), content, target.zip ? 'application/zip' : target.binary ? 'application/octet-stream'
+          : target.file(p()).endsWith('.xml') ? 'application/xml;charset=utf-8' : 'text/plain;charset=utf-8');
         return false;
       }
       if (v === 'copy') {
