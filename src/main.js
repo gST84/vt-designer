@@ -1,6 +1,7 @@
 // VT Designer: start-up, top bar, toolbar, status bar and keyboard shortcuts.
 import { Store } from './store.js';
-import { Editor } from './editor.js';
+import { Editor, DRAW_TYPES } from './editor.js';
+import { boxOfPath } from './render.js';
 import { Tree } from './ui/tree.js';
 import { Props } from './ui/props.js';
 import { h, icon, download, pickFiles, fileBase } from './util.js';
@@ -18,22 +19,70 @@ const store = new Store();
 const $ = (s) => document.querySelector(s);
 
 // ---------- placing new objects ----------
+/** `o` may hold an object of `type` as a child (in the VT version of the project). */
+function accepts(o, type) {
+  return !!o && (CHILD_TYPES[o.type] || []).includes(type) && childVersion(o.type, type) <= store.project.settings.vtVersion;
+}
+
 /** Where a new object of `type` goes: the selected container/button/key, its parent, or the page. */
 function target(type) {
   const O = store.O;
   const sel = store.sel;
-  const ver = store.project.settings.vtVersion;
-  const ok = (o) => o && (CHILD_TYPES[o.type] || []).includes(type) && childVersion(o.type, type) <= ver;
-  if (sel && ok(O[sel.id]) && (sel.path || sel.id === store.root)) return { parent: O[sel.id], path: sel.path || [] };
+  if (sel && accepts(O[sel.id], type) && (sel.path || sel.id === store.root)) return { parent: O[sel.id], path: sel.path || [] };
   if (sel?.path?.length) {
     const [pid] = sel.path[sel.path.length - 1];
-    if (ok(O[pid])) return { parent: O[pid], path: sel.path.slice(0, -1) };
+    if (accepts(O[pid], type)) return { parent: O[pid], path: sel.path.slice(0, -1) };
   }
-  if (ok(O[store.root])) return { parent: O[store.root], path: [] };
+  if (accepts(O[store.root], type)) return { parent: O[store.root], path: [] };
   return null;
 }
 
+/**
+ * Where an object drawn from page point `pt` goes, with the page position of that parent
+ * (`origin`). A point outside the selected container puts it on the page itself.
+ */
+function drawTarget(type, pt, quiet) {
+  const t = target(type);
+  if (!t) {
+    if (!quiet) toast(`Een ${TYPES[type].name} kan hier niet geplaatst worden.`);
+    return null;
+  }
+  if (!t.path.length) return { ...t, origin: { x: 0, y: 0 } };
+  const b = boxOfPath(store.project, t.path, t.parent.id);
+  const inside = b && pt.x >= b.x && pt.y >= b.y && pt.x < b.x + b.w && pt.y < b.y + b.h;
+  if (!inside && accepts(store.O[store.root], type)) return { parent: store.O[store.root], path: [], origin: { x: 0, y: 0 } };
+  return { ...t, origin: b ? { x: b.x, y: b.y } : { x: 0, y: 0 } };
+}
+
 const canPlace = (type) => !!target(type);
+
+/** A button gets a text, so it does not start empty. */
+function addButtonLabel(p, obj) {
+  const label = addObject(p, 11, { value: 'Knop', length: 8, width: Math.max(1, obj.width - 8), height: 16, options: 1, justification: 1 | 4 });
+  obj.children.push({ id: label.id, x: 4, y: Math.max(0, Math.round((obj.height - 16) / 2)) });
+}
+
+/**
+ * Adds a drawn object to `t.parent` at (x, y) in the parent's coordinates; the other attributes
+ * override the defaults. Without a width (a click) the default size is kept inside the parent.
+ */
+function createAt(type, t, { x, y, ...attrs }) {
+  let obj, path;
+  store.edit((p) => {
+    const par = p.objects[t.parent.id];
+    obj = addObject(p, type, attrs);
+    if (type === 6) addButtonLabel(p, obj);
+    if (attrs.width === undefined) {
+      const [pw, ph] = sizeOf(p, par);
+      const [w, hh] = sizeOf(p, obj);
+      x = Math.max(0, Math.min(x, pw - w));
+      y = Math.max(0, Math.min(y, ph - hh));
+    }
+    par.children.push({ id: obj.id, x, y });
+    path = [...t.path, [par.id, par.children.length - 1]];
+  });
+  store.select({ id: obj.id, path });
+}
 
 async function place(type) {
   const t = target(type);
@@ -48,10 +97,7 @@ async function place(type) {
   store.edit((p) => {
     const par = p.objects[t.parent.id];
     obj = addObject(p, type, attrs);
-    if (type === 6) {
-      const label = addObject(p, 11, { value: 'Knop', length: 8, width: obj.width - 8, height: 16, options: 1, justification: 1 | 4 });
-      obj.children.push({ id: label.id, x: 4, y: Math.max(0, Math.round((obj.height - 16) / 2)) });
-    }
+    if (type === 6) addButtonLabel(p, obj);
     const n = par.children.length;
     const [pw, ph] = sizeOf(p, par);
     const [w, hh] = sizeOf(p, obj);
@@ -67,6 +113,8 @@ window.vtd = app; // handy in the console
 
 // ---------- layout ----------
 const editor = new Editor(store, $('#canvas'));
+editor.target = drawTarget;
+editor.create = createAt;
 const tree = new Tree(store, $('#tree'), $('#left-tabs'), app);
 const props = new Props(store, $('#props'), app);
 app.editor = editor;
@@ -102,7 +150,10 @@ const rootLabel = h('span', { class: 'rootname' });
 const addBtns = [];
 /** Icon button per object type; the tooltip says where the object goes, or why it cannot. */
 const mk = ([t, label]) => {
-  const b = h('button', { class: 'tool iconbtn', 'aria-label': `${label} toevoegen`, onclick: () => (b.classList.contains('off') ? toast(b.dataset.tip) : place(t)) }, icon('t' + t));
+  const b = h('button', {
+    class: 'tool iconbtn', 'aria-label': `${label} toevoegen`,
+    onclick: () => (b.classList.contains('off') ? toast(b.dataset.tip) : DRAW_TYPES.includes(t) ? editor.setTool(t) : place(t)),
+  }, icon('t' + t));
   addBtns.push([t, b, label]);
   return b;
 };
@@ -126,11 +177,19 @@ function toolbar() {
     b.classList.toggle('off', !tg);
     b.setAttribute('aria-disabled', tg ? 'false' : 'true');
     const need = root && (CHILD_TYPES[root.type] || []).includes(t) ? childVersion(root.type, t) : 0;
-    b.dataset.tip = tg ? `${label} (${TYPES[t].name}) – toevoegen aan ${tg.parent.name}`
+    b.dataset.tip = tg ? `${label} (${TYPES[t].name}) – ${DRAW_TYPES.includes(t) ? 'tekenen in' : 'toevoegen aan'} ${tg.parent.name}`
       : need > store.project.settings.vtVersion ? `${label} (${TYPES[t].name}) kan pas vanaf VT-versie ${need} in ${where}`
         : `${label} (${TYPES[t].name}) kan niet in ${where}`;
+    b.classList.toggle('active', editor.tool?.type === t);
   }
 }
+
+/** What to do with the current tool, in the status bar. */
+const TOOL_HINT = {
+  13: 'Lijn: klik het begin- en eindpunt, of sleep · bijna recht wordt recht (Alt: niet) · Shift: per pixel · Esc: stoppen',
+  16: 'Veelhoek: klik de punten · klik op het eerste punt om te sluiten · Enter of dubbelklik: open lijn · Backspace: laatste punt weg · Esc: stoppen',
+};
+const boxHint = (t) => `${TYPES[t].nl}: sleep een rechthoek, of klik voor de standaardmaat · Shift: per pixel · Esc: stoppen`;
 
 // ---------- status bar ----------
 const stPool = h('span');
@@ -183,6 +242,7 @@ store.on('select', toolbar);
 store.on('root', toolbar);
 store.on('zoom', ({ zoom }) => { zoomLbl.textContent = Math.round(zoom * 100) + '%'; });
 store.on('pointer', ({ x, y }) => { stPos.textContent = `x ${x}  y ${y}`; });
+store.on('tool', ({ type }) => { toolbar(); editor.hint.textContent = type == null ? '' : TOOL_HINT[type] || boxHint(type); });
 
 // ---------- files ----------
 async function newProj() {
@@ -224,6 +284,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && k === 's') { e.preventDefault(); saveFile(); return; }
   if (mod && k === 'e') { e.preventDefault(); exportDialog(store); return; }
   if (typing) return;
+  if (editor.key(e)) return;
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? store.redo() : store.undo(); return; }
   if (mod && k === 'y') { e.preventDefault(); store.redo(); return; }
   const sel = store.sel;

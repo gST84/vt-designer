@@ -18,6 +18,7 @@ import { buildDdop, poolForSections, sectionY, DDI, kindOf, KIND_CHOICES } from 
 import { tiaTcPool, ddopListing } from './export/tcpool.js';
 import { tiaTcIo, tiaTcIoMap, realLit } from './export/tcio.js';
 import { APP_VERSION, sclText, buildExport } from './export/common.js';
+import { normalizePoints, lineFromPoints, lineEnds, straighten, polygonKind } from './geom.js';
 
 /** The 119 bytes of vt_test_project/VT_TestPool.iop (from pool_listing.txt). */
 const TEST_POOL = `
@@ -461,6 +462,26 @@ export function runTests(log = (s) => console.log(s)) {
   check('zip: 2 bestanden, juiste lengte', (z[end + 10] | (z[end + 11] << 8)) === 2 && z.length === 2 * 30 + 5 + 5 + 5 + 3 + 2 * 46 + 5 + 5 + 22);
   check('utf8: é en € juist', utf8('é€').join(',') === '195,169,226,130,172');
   check('zip: inhoud ongewijzigd opgeslagen', String.fromCharCode(...z.slice(30 + 5, 30 + 5 + 5)) === 'hello' && u32(14) === 0x3610a686);
+
+  // 12. drawing on the canvas: points relative to their box, lines from two points, polygon types
+  const np = normalizePoints([{ x: 30, y: 12 }, { x: 10, y: 40 }, { x: 50, y: 40 }]);
+  check('tekenen: punten relatief tegenover hun kader', np.dx === 10 && np.dy === 12 && np.w === 40 && np.h === 28
+    && np.points.map((q) => `${q.x},${q.y}`).join(' ') === '20,0 0,28 40,28');
+  const ln = lineFromPoints({ x: 50, y: 10 }, { x: 20, y: 30 });
+  check('tekenen: lijn van rechtsboven naar linksonder', ln.x === 20 && ln.y === 10 && ln.w === 30 && ln.h === 20 && ln.dir === 1);
+  const ends = lineEnds({ width: ln.w, height: ln.h, lineDirection: ln.dir }, ln.x, ln.y);
+  check('tekenen: eindpunten van een lijn terug', ends.some((q) => q.x === 50 && q.y === 10) && ends.some((q) => q.x === 20 && q.y === 30)
+    && lineFromPoints({ x: 0, y: 0 }, { x: 10, y: 10 }).dir === 0 && lineFromPoints({ x: 10, y: 10 }, { x: 0, y: 0 }).dir === 0);
+  const st = straighten({ x: 0, y: 0 }, { x: 100, y: 9 }), sv = straighten({ x: 0, y: 0 }, { x: 9, y: 100 }), sd = straighten({ x: 0, y: 0 }, { x: 100, y: 40 });
+  check('tekenen: bijna recht wordt recht', st.y === 0 && st.x === 100 && sv.x === 0 && sv.y === 100 && sd.x === 100 && sd.y === 40);
+  const P = (s) => s.split(' ').map((q) => { const [x, y] = q.split(',').map(Number); return { x, y }; });
+  check('tekenen: soort veelhoek', polygonKind(P('0,0 10,0 5,8')) === 0 && polygonKind(P('0,0 20,0 20,20 10,20 10,10 0,10')) === 1
+    && polygonKind(P('0,0 10,10 10,0 0,10')) === 2 && polygonKind(P('10,0 16,18 1,7 19,7 4,18')) === 2 && polygonKind(P('0,0 10,0 10,10 0,10')) === 0);
+  const pd = newProject();
+  const poly = addObject(pd, 16, { width: np.w, height: np.h, points: np.points, polygonType: polygonKind(np.points) });
+  const line = addObject(pd, 13, { width: ln.w, height: ln.h, lineDirection: ln.dir });
+  pd.objects[1000].children.push({ id: poly.id, x: np.dx, y: np.dy }, { id: line.id, x: ln.x, y: ln.y });
+  check('tekenen: getekende veelhoek en lijn zonder fouten of waarschuwingen', validate(pd).every((m) => m.level === 'info'));
 
   log(fails ? `\n${fails} test(s) mislukt` : '\nAlle tests geslaagd');
   return fails;

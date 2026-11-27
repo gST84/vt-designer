@@ -108,7 +108,9 @@ export class Props {
       h('p', null, h('b', null, p.name)),
       h('p', { class: 'hint' }, `Terminal: datamasker ${p.settings.dmSize} × ${p.settings.dmSize}, softkeys ${p.settings.skWidth} × ${p.settings.skHeight} (${p.settings.skCount} stuks), VT-versie ${p.settings.vtVersion}.`),
       h('p', { class: 'hint keys' }, 'Klik een object om het te selecteren, dubbelklik om in een container of knop te gaan (Alt+klik: diepste object). ',
-        'Pijltjes verschuiven (Shift: 10 px), Delete verwijdert, Esc kiest de ouder, Ctrl+D dupliceert, Ctrl+Z/Y.'));
+        'Pijltjes verschuiven (Shift: 10 px), Delete verwijdert, Esc kiest de ouder, Ctrl+D dupliceert, Ctrl+Z/Y.'),
+      h('p', { class: 'hint keys' }, 'Tekenen: kies een object in de werkbalk en sleep op het scherm (een klik geeft de standaardmaat). ',
+        'Een lijn klik je van punt naar punt, een veelhoek punt per punt. De punten van een veelhoek of lijn sleep je aan hun ronde handvatten.'));
   }
 
   /** Checkbox "in VT_Io" and the resulting field. */

@@ -114,6 +114,18 @@ svg.vt .handle[data-h=n], svg.vt .handle[data-h=s] { cursor: ns-resize; }
 svg.vt .handle[data-h=e], svg.vt .handle[data-h=w] { cursor: ew-resize; }
 svg.vt .handle[data-h=ne], svg.vt .handle[data-h=sw] { cursor: nesw-resize; }
 svg.vt .gridline { stroke: #000; stroke-opacity: .08; vector-effect: non-scaling-stroke; pointer-events: none; fill: none; }
+svg.vt .handle.pt { cursor: crosshair; }
+svg.vt .drafting { pointer-events: none; }
+svg.vt .draft { fill: none; stroke: var(--sel); stroke-width: 1.5; stroke-dasharray: 4 2; vector-effect: non-scaling-stroke; }
+svg.vt .draft-pt { fill: var(--sel); }
+svg.vt .draft-close { fill: none; stroke: var(--sel); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+svg.vt .draft-txt { fill: var(--sel); font-family: system-ui, sans-serif; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+.stage.drawing svg.vt, .stage.drawing svg.vt .pl, .stage.drawing svg.vt .handle { cursor: crosshair; }
+#toolbar .tool.active { background: var(--accent-soft); border-color: var(--accent); }
+#canvas .toolhint { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 24px); box-sizing: border-box;
+  padding: 5px 10px; border-radius: 6px; background: var(--panel); border: 1px solid var(--accent); color: var(--text);
+  font-size: 12px; line-height: 1.4; text-align: center; box-shadow: 0 2px 8px rgba(0, 0, 0, .15); pointer-events: none; }
+#canvas .toolhint[hidden] { display: none; }
 
 /* ---------- left panel ---------- */
 .grouphead { display: flex; align-items: center; justify-content: space-between; margin: 8px 0 2px; padding: 2px 4px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border-bottom: 1px solid var(--line); }
