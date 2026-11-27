@@ -24,13 +24,16 @@ een DB wordt een datatype `<DB>_<naam>` (bv. `VT_Io_out`).
 
 ## Importeren
 
-1. **Bibliotheken** (Bibliotheekbeheer › Bibliotheek toevoegen), alle drie nodig:
+1. **Bibliotheken** (Bibliotheekbeheer › Bibliotheek toevoegen):
    - **CAA CanL2** (CAA Can Low Level Extern, namespace `CL2`): `CL2.Read`, `CL2.Write`, `CL2.ERROR`, …;
    - **CAA Types** (CAA Types Extern, namespace `CAA`): `CAA.HANDLE`, `CAA.gc_hINVALID`;
-   - **CAA Can Low Level Imp Extern** (namespace `CL2I`): `CL2I.DATA`, `CL2I.COBID`.
-   Zonder deze drie geeft de compiler "Unknown type 'CAA.HANDLE'" of "'CL2.ERROR'" in de LCan-blokken.
-2. **Project › PLCopenXML importeren**, het `.xml`-bestand kiezen en alles aanvinken. Bij een nieuwe export van
-   het ontwerp: bestaande objecten vervangen.
+   - **CAA Can Low Level Imp Extern** (namespace `CL2I`): `CL2I.DATA`, `CL2I.COBID`;
+   - **CAA Callback** (namespace `CB`): `CB.EVENT.NO_EVENT` voor `CL2.CreateMaskReceiver`; nodig als de compiler
+     `CB` niet kent.
+   Zonder deze bibliotheken geeft de compiler "Unknown type 'CAA.HANDLE'" of "'CL2.ERROR'" in de LCan-blokken.
+2. Selecteer **Application**, dan **Project › PLCopenXML importeren** (niet Project › Importeren), het `.xml`-bestand
+   kiezen en alles aanvinken. Alles komt in de map **ISOBUS**, met de submappen CAN, VT_Client, TC_Client en een map
+   met de naam van je ontwerp. Bij een nieuwe export van het ontwerp: bestaande objecten vervangen.
 3. **CAN-interface** van de sturing op 250 kbit/s (ISOBUS). Gebruik op dezelfde interface niet ook de J1939- of
    ISOBUS-stack van de fabrikant met hetzelfde adres.
 

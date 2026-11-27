@@ -17,7 +17,24 @@ EXIT RETURN CONTINUE AND OR XOR NOT MOD TRUE FALSE ARRAY STRUCT POINTER REFERENC
 USINT UINT UDINT ULINT REAL LREAL TIME STRING WSTRING'''.split())
 FUNCS = set('''SHL SHR ROL ROR LEN ABS LOWER_BOUND UPPER_BOUND TIME ADR SEL MIN MAX LIMIT MUX SIZEOF CONCAT LEFT RIGHT MID FIND
 TRUNC SQRT'''.split())
-NAMESPACES = {'CL2', 'CAA', 'CL2I'}
+NAMESPACES = {'CL2', 'CAA', 'CL2I', 'CB'}
+# CODESYS wants every input of a library function, also the optional ones (C0040 "requires exactly n inputs")
+CL2_INPUTS = {'DRIVEROPENH': 5, 'CREATEMASKRECEIVER': 13, 'CREATEMESSAGE': 6, 'WRITE': 4, 'READ': 3, 'FREEMESSAGE': 1,
+              'GETMESSAGEID': 2, 'GETMESSAGELENGTH': 2, 'GETMESSAGEDATAPOINTER': 2}
+
+
+def calls(code, ns):
+    """(function, number of named inputs) of every call ns.f(…) in the code."""
+    for m in re.finditer(rf'\b{ns}\.(\w+)\s*\(', code):
+        depth, k, args = 1, m.end(), 0
+        while k < len(code) and depth:
+            c = code[k]
+            depth += c == '('
+            depth -= c == ')'
+            if depth == 1 and code.startswith(':=', k):
+                args += 1
+            k += 1
+        yield m.group(1), args
 # IL operators and other words CODESYS does not accept as a variable name
 RESERVED = set('''ST STN LD LDN S R CAL CALC CALCN RET RETC RETCN JMP JMPC JMPCN ADD SUB MUL DIV AND ANDN OR ORN XOR XORN NOT GT GE
 EQ NE LE LT MOD AT BY DO OF TO THIS SUPER'''.split())
@@ -103,6 +120,10 @@ def check(st_file, xml_file=None):
         if re.match(r'(?i)\s*FUNCTION\b(?!_BLOCK)', code_decl) and re.search(r'(?im)^\s*VAR_TEMP\b', code_decl):
             errors.append(f'{name}: VAR_TEMP in een FUNCTION (CODESYS: enkel VAR)')
         code = strip(impl)
+        for f, n in calls(code, 'CL2'):
+            want = CL2_INPUTS.get(f.upper())
+            if want is not None and n != want:
+                errors.append(f'{name}: CL2.{f} met {n} ingangen, CODESYS vraagt er {want}')
         for m in re.finditer(r'(?i)\b(?:L?T|L?TIME)#[0-9A-Za-z.]*_[0-9A-Za-z_.]*', code):
             errors.append(f'{name}: TIME-literal met _ ({m.group(0)}): CODESYS weigert dat')
         for o, c in [('IF', 'END_IF'), ('CASE', 'END_CASE'), ('FOR', 'END_FOR'), ('WHILE', 'END_WHILE'), ('REPEAT', 'END_REPEAT')]:

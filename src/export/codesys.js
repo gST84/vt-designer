@@ -135,13 +135,29 @@ const varXml = (v, ind) => [
 ].join('\n');
 
 const SECTION_XML = { VAR_INPUT: 'inputVars', VAR_OUTPUT: 'outputVars', VAR_IN_OUT: 'inOutVars', VAR: 'localVars', VAR_TEMP: 'tempVars', 'VAR CONSTANT': 'localVars' };
-const plainText = (name, decl, ind) => [
+
+/**
+ * Fixed ObjectId of an object (a GUID from its kind and name): CODESYS uses it to place the object in the folder
+ * structure of the import (projectstructure), and a new export of the same object keeps the same id.
+ */
+export function objectId(o) {
+  const key = `vt-designer:${o.kind}:${o.name.toLowerCase()}`;
+  const hex = [0x811c9dc5, 0x2c1b3c6d, 0x9e3779b9, 0x85ebca6b].map((seed) => {
+    let h = seed >>> 0;
+    for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619) >>> 0;
+    h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d) >>> 0; // spread the last characters over every digit
+    return h.toString(16).padStart(8, '0');
+  }).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** <addData> with one <data> per entry: [name, handleUnknown, element]. */
+const addData = (ind, entries) => [
   `${ind}<addData>`,
-  `${ind}  <data name="http://www.3s-software.com/plcopenxml/${name}" handleUnknown="implementation">`,
-  `${ind}    <${name === 'interfaceasplaintext' ? 'InterfaceAsPlainText' : 'PlainText'}>${xhtml(decl)}</${name === 'interfaceasplaintext' ? 'InterfaceAsPlainText' : 'PlainText'}>`,
-  `${ind}  </data>`,
+  ...entries.map(([name, handle, el]) => `${ind}  <data name="http://www.3s-software.com/plcopenxml/${name}" handleUnknown="${handle}">\n${ind}    ${el}\n${ind}  </data>`),
   `${ind}</addData>`,
 ].join('\n');
+const idData = (o) => ['objectid', 'discard', `<ObjectId>${objectId(o)}</ObjectId>`];
 
 function pouXml(o) {
   const parts = [];
@@ -157,7 +173,7 @@ function pouXml(o) {
     ...parts,
     '        </interface>',
     `        <body><ST>${xhtml(o.impl)}</ST></body>`,
-    plainText('interfaceasplaintext', o.decl, '        '),
+    addData('        ', [['interfaceasplaintext', 'implementation', `<InterfaceAsPlainText>${xhtml(o.decl)}</InterfaceAsPlainText>`], idData(o)]),
     '      </pou>',
   ].join('\n');
 }
@@ -169,19 +185,17 @@ const dutXml = (o) => [
   ...o.fields.map((v) => varXml(v, '            ')),
   '          </struct>',
   '        </baseType>',
+  addData('        ', [idData(o)]),
   '      </dataType>',
 ].join('\n');
 
 const gvlXml = (o) => [
   `      <globalVars name="${x(o.name)}">`,
   ...o.vars.map((v) => varXml(v, '        ')),
-  ...((o.attrs || []).length ? [
-    '        <addData>',
-    '          <data name="http://www.3s-software.com/plcopenxml/attributes" handleUnknown="implementation">',
-    `            <Attributes>${o.attrs.map((a) => `<Attribute Name="${x(a)}" Value="" />`).join('')}</Attributes>`,
-    '          </data>',
-    '        </addData>',
-  ] : []),
+  addData('        ', [
+    ...((o.attrs || []).length ? [['attributes', 'implementation', `<Attributes>${o.attrs.map((a) => `<Attribute Name="${x(a)}" Value="" />`).join('')}</Attributes>`]] : []),
+    idData(o),
+  ]),
   '      </globalVars>',
 ].join('\n');
 
@@ -212,11 +226,44 @@ ${pous.map(pouXml).join('\n')}
   <instances>
     <configurations />
   </instances>
-${gvls.length ? `  <addData>
-${gvls.map(gvlData).join('\n')}
+  <addData>
+${[...gvls.map(gvlData), structureData(objects)].join('\n')}
   </addData>
-` : ''}</project>
+</project>
 `;
+}
+
+/**
+ * The folders of the import (as CODESYS exports them): every object with `folder` (a path such as ['ISOBUS', 'CAN'])
+ * lands in that folder below the node selected for the import, so the folders need not be made again by hand.
+ */
+function structureData(objects) {
+  const root = { folders: new Map(), objects: [] };
+  for (const o of objects) {
+    let node = root;
+    for (const f of o.folder || []) {
+      if (!node.folders.has(f)) node.folders.set(f, { folders: new Map(), objects: [] });
+      node = node.folders.get(f);
+    }
+    node.objects.push(o);
+  }
+  const lines = [];
+  const walk = (node, ind) => {
+    for (const [name, sub] of node.folders) {
+      lines.push(`${ind}<Folder Name="${x(name)}">`);
+      walk(sub, ind + '  ');
+      lines.push(`${ind}</Folder>`);
+    }
+    for (const o of node.objects) lines.push(`${ind}<Object Name="${x(o.name)}" ObjectId="${objectId(o)}" />`);
+  };
+  walk(root, '        ');
+  return [
+    '    <data name="http://www.3s-software.com/plcopenxml/projectstructure" handleUnknown="discard">',
+    '      <ProjectStructure>',
+    ...lines,
+    '      </ProjectStructure>',
+    '    </data>',
+  ].join('\n');
 }
 
 /** One GVL as additional data. PLCopen allows a single element per <data>: one <data> per GVL, as CODESYS writes it. */
@@ -232,16 +279,22 @@ const gvlData = (o) => [
 export function codesysProjectObjects(p) {
   const sources = [tiaSource(p), tiaIoDb(p), tiaIoMap(p)];
   if (p.implement?.enabled) sources.push(tiaTcPool(p), tiaTcIo(p), tiaTcIoMap(p));
-  return order(sources.flatMap((s) => translateScl(s, APP_VERSION)));
+  return order(inFolder([FOLDER, p.name || 'Project'], sources.flatMap((s) => translateScl(s, APP_VERSION))));
 }
+
+/** Top folder of the import in CODESYS; below it CAN, VT_Client, TC_Client and the project. */
+export const FOLDER = 'ISOBUS';
+const inFolder = (folder, objects) => objects.map((o) => ({ ...o, folder }));
 
 /**
  * The fixed blocks, translated: `files` = { lcan, vtUdt, vtScl, tcUdt?, tcScl? } as text
  * (LCan_CL2.st and the TIA sources from isobus_project_bundle).
  */
 export function codesysBlockObjects(files) {
-  const out = [...parseStObjects(files.lcan)];
-  for (const k of ['vtUdt', 'vtScl', 'tcUdt', 'tcScl']) if (files[k]) out.push(...translateScl(files[k], APP_VERSION));
+  const out = [...inFolder([FOLDER, 'CAN'], parseStObjects(files.lcan))];
+  for (const k of ['vtUdt', 'vtScl', 'tcUdt', 'tcScl']) {
+    if (files[k]) out.push(...inFolder([FOLDER, k.startsWith('vt') ? 'VT_Client' : 'TC_Client'], translateScl(files[k], APP_VERSION)));
+  }
   return order(out);
 }
 

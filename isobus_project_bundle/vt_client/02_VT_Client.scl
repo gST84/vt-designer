@@ -10,6 +10,7 @@
 //
 //  Vereist: Siemens-bibliotheek LCan en 01_VTC_Types.udt.
 //  Staat los van vt_test_project (eigen namen VTC_…/typeVtc…).
+//  Versie 0.8 – 2026-11-27 – k := DINT_TO_INT(m) bij het zoeken van de VT (CODESYS zet DINT niet vanzelf om naar INT).
 //  Versie 0.7 – 2026-11-27 – lokale m stond twee keer gedeclareerd (DInt en Int): enkel DInt.
 //  Versie 0.6 – 2026-11-26 – pool-overdracht: End of Message Ack enkel aanvaarden na alle pakketten en
 //  met de juiste lengte (oude bevestigingen sloten anders delen af zonder data), CTS buiten het bericht
@@ -25,10 +26,10 @@
 // =====================================================================
 
 FUNCTION "VTC_Elapsed" : Time
-TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - vt_client 0.7'
+TITLE = 'Verstreken tijd sinds een TIME_TCK-tijdstip - vt_client 0.8'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.7
-//vt_client versie 0.7 (2026-11-27)
+VERSION : 0.8
+//vt_client versie 0.8 (2026-11-27)
    VAR_INPUT
       since : Time;
       now : Time;
@@ -46,10 +47,10 @@ BEGIN
 END_FUNCTION
 
 FUNCTION "VTC_Push" : Bool
-TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - vt_client 0.7'
+TITLE = 'Frame in de zendwachtrij zetten (FALSE = wachtrij vol) - vt_client 0.8'
 { S7_Optimized_Access := 'TRUE' }
-VERSION : 0.7
-//vt_client versie 0.7 (2026-11-27)
+VERSION : 0.8
+//vt_client versie 0.8 (2026-11-27)
    VAR_INPUT
       id : DWord;
       data : Array[0..7] of Byte;
@@ -74,12 +75,12 @@ BEGIN
 END_FUNCTION
 
 FUNCTION_BLOCK "VT_Client"
-TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io) - versie 0.7'
+TITLE = 'ISOBUS VT-client met PLC-interface (VT_Io) - versie 0.8'
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : 'Claude'
 FAMILY : ISOBUS
-VERSION : 0.7
-//vt_client versie 0.7 (2026-11-27)
+VERSION : 0.8
+//vt_client versie 0.8 (2026-11-27)
 //Elke cyclus aanroepen, gevolgd door "VT_IoMap"(). enable = TRUE start: filter zetten,
 //address claim, wachten op de VT, pool uploaden. Daarna running = TRUE en volgt het scherm "VT_Io".
    VAR_INPUT
@@ -728,12 +729,12 @@ BEGIN
 	                #k := -1;
 	                FOR #m := 0 TO #nClaims - 1 DO
 	                    IF #claimFn[#m] = 16#1D AND #claimInst[#m] = 16#00 AND #k < 0 THEN
-	                        #k := #m;
+	                        #k := DINT_TO_INT(#m);
 	                    END_IF;
 	                END_FOR;
 	                FOR #m := 0 TO #nClaims - 1 DO
 	                    IF #claimFn[#m] = 16#1D AND #k < 0 THEN
-	                        #k := #m;
+	                        #k := DINT_TO_INT(#m);
 	                    END_IF;
 	                END_FOR;
 	                IF #k >= 0 THEN

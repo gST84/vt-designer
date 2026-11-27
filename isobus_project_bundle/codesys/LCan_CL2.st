@@ -13,6 +13,7 @@
 //  na "// ---- code" de implementatie. De VT Designer leest dit bestand en zet het mee in de
 //  PLCopen XML; in CODESYS plak je per object de declaratie en de code.
 //
+//  Versie 0.2 – 2026-11-27 – elke ingang van de CAA-functies ingevuld (CODESYS laat er geen weg), eEvent := CB.EVENT.NO_EVENT.
 //  Versie 0.1 – 2026-11-26 – eerste versie.
 // =====================================================================
 
@@ -44,7 +45,7 @@ END_VAR
 
 // ======== POU LCan_SetTransparentFilter
 FUNCTION_BLOCK LCan_SetTransparentFilter
-// lcan_cl2 versie 0.1 (2026-11-26)
+// lcan_cl2 versie 0.2 (2026-11-27)
 // Stijgende flank op execute: de regels van filterData met ignoreFilter = FALSE worden de
 // filterlijst van (hwIoOfTransparentModul, proxyIndex) voor LCan_RcvTransparentMessage.
 VAR_INPUT
@@ -107,7 +108,7 @@ busy := FALSE;
 
 // ======== POU LCan_RcvTransparentMessage
 FUNCTION_BLOCK LCan_RcvTransparentMessage
-// lcan_cl2 versie 0.1 (2026-11-26)
+// lcan_cl2 versie 0.2 (2026-11-27)
 // Eén ontvangen 29-bit dataframe per handshake, zoals met de CM CAN: valid = TRUE toont een frame;
 // een stijgende flank op ackMessage bevestigt het en toont het volgende frame dat door de filterlijst
 // (LCan_SetTransparentFilter met hetzelfde netId en proxyIndex) komt. Elke instantie heeft een eigen
@@ -170,7 +171,8 @@ IF hReceiver = CAA.gc_hINVALID THEN
 	// alle 29-bit dataframes, zonder de frames die we zelf versturen
 	hReceiver := CL2.CreateMaskReceiver(hDriver := hDriver, cobIdValue := 0, cobIdMask := 0,
 		xRTRValue := FALSE, xRTRMask := TRUE, x29BitIdValue := TRUE, x29BitIdMask := TRUE,
-		xTransmitValue := FALSE, xTransmitMask := TRUE, xAlwaysNewest := FALSE, peError := ADR(eErr));
+		xTransmitValue := FALSE, xTransmitMask := TRUE, xAlwaysNewest := FALSE,
+		eEvent := CB.EVENT.NO_EVENT, xEnableSyncWindow := FALSE, peError := ADR(eErr));
 	IF hReceiver = CAA.gc_hINVALID THEN
 		error := TRUE;
 		status := TO_WORD(eErr);
@@ -183,7 +185,7 @@ px := BYTE_TO_INT(proxyIndex);
 
 IF resetRcvMsgBuffer AND NOT resetOld THEN	// wachtende frames wissen
 	FOR i := 1 TO 1000 DO
-		hMsg := CL2.Read(hReceiverId := hReceiver, peError := ADR(eErr));
+		hMsg := CL2.Read(hReceiverId := hReceiver, pctMsgLeft := 0, peError := ADR(eErr));
 		IF hMsg = CAA.gc_hINVALID THEN
 			EXIT;
 		END_IF;
@@ -200,11 +202,11 @@ ackOld := ackMessage;
 
 IF NOT valid THEN	// het volgende frame dat door de filterlijst komt
 	FOR i := 1 TO 64 DO
-		hMsg := CL2.Read(hReceiverId := hReceiver, peError := ADR(eErr));
+		hMsg := CL2.Read(hReceiverId := hReceiver, pctMsgLeft := 0, peError := ADR(eErr));
 		IF hMsg = CAA.gc_hINVALID THEN
 			EXIT;
 		END_IF;
-		id := TO_DWORD(CL2.GetMessageId(hMessage := hMsg)) AND 16#1FFFFFFF;
+		id := TO_DWORD(CL2.GetMessageId(hMessage := hMsg, peError := ADR(eErr))) AND 16#1FFFFFFF;
 		pass := ignoreRcvFilterSetting;
 		IF NOT pass AND net <= 7 AND px <= 31 THEN
 			IF LCan_CL2.filters[net, px].valid THEN
@@ -216,8 +218,8 @@ IF NOT valid THEN	// het volgende frame dat door de filterlijst komt
 			END_IF;
 		END_IF;
 		IF pass THEN
-			nBytes := CL2.GetMessageLength(hMessage := hMsg);
-			pData := CL2.GetMessageDataPointer(hMessage := hMsg);
+			nBytes := CL2.GetMessageLength(hMessage := hMsg, peError := ADR(eErr));
+			pData := CL2.GetMessageDataPointer(hMessage := hMsg, peError := ADR(eErr));
 			FOR k := 0 TO 7 DO
 				IF pData <> 0 AND k < USINT_TO_INT(nBytes) THEN
 					messageData[k] := pData^[k];
@@ -242,7 +244,7 @@ END_IF;
 
 // ======== POU LCan_SendTransparentMessage
 FUNCTION_BLOCK LCan_SendTransparentMessage
-// lcan_cl2 versie 0.1 (2026-11-26)
+// lcan_cl2 versie 0.2 (2026-11-27)
 // Stijgende flank op execute: messageData (8 bytes) met messageId in de zendwachtrij van CL2.
 // done of error volgt in dezelfde aanroep en blijft tot execute FALSE is.
 VAR_INPUT
@@ -289,7 +291,7 @@ IF execute AND NOT edge THEN
 			error := TRUE;
 			status := TO_WORD(eErr);
 		ELSE
-			pData := CL2.GetMessageDataPointer(hMessage := hMsg);
+			pData := CL2.GetMessageDataPointer(hMessage := hMsg, peError := ADR(eErr));
 			IF pData <> 0 THEN
 				FOR k := 0 TO 7 DO
 					pData^[k] := messageData[k];
@@ -315,7 +317,7 @@ busy := FALSE;
 
 // ======== POU Chars_TO_Strg
 FUNCTION Chars_TO_Strg : BOOL
-// lcan_cl2 versie 0.1 (2026-11-26)
+// lcan_cl2 versie 0.2 (2026-11-27)
 // Zoals Chars_TO_Strg in TIA Portal: Cnt tekens vanaf Chars[pChars] (relatief tot de ondergrens) als tekst.
 VAR_INPUT
 	pChars : DINT;	// eerste teken, relatief tot de ondergrens van Chars

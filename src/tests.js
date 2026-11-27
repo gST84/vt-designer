@@ -7,7 +7,7 @@ import { COMMANDS, decodeCommand, encodeCommand, defaultsFor, splitCommands, joi
 import { addObject, newProject, normalizeProject, projectFromObjects, renumber, deleteObject } from './model.js';
 import { validate } from './iso/validate.js';
 import { tiaSource } from './export/tia.js';
-import { codesysGvl, codesysXml, codesysProjectObjects, plcopenXml } from './export/codesys.js';
+import { codesysGvl, codesysXml, codesysProjectObjects, plcopenXml, objectId } from './export/codesys.js';
 import { translateScl, parseValue, valueText, parseStObjects, stText, mask } from './export/scl2st.js';
 import { listing } from './export/listing.js';
 import { ioPlan, tiaIoDb, tiaIoMap, inIo } from './export/io.js';
@@ -31,6 +31,7 @@ D9 59 17 00 02 00 00 00`;
 const hexToBytes = (s) => Uint8Array.from(s.trim().split(/\s+/).map((x) => parseInt(x, 16)));
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0').toUpperCase()).join(' ');
 const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+const xmlText = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 /** Number of child elements of every <data> element in an XML text (tags only: values are escaped). */
 function dataChildren(text) {
   const out = [], stack = [];
@@ -438,6 +439,13 @@ export function runTests(log = (s) => console.log(s)) {
   // PLCopen TC6: <data> holds exactly one element (CODESYS: "ongeldig onderliggend element globalVars")
   check('CODESYS: every <data> with exactly one element', [csXml, xml, plcopenXml(csObjs.filter((o) => o.kind !== 'gvl'), 'NoGvl')]
     .every((doc) => dataChildren(doc).length > 0 && dataChildren(doc).every((n) => n === 1)));
+  const ids = [...csXml.matchAll(/<ObjectId>([0-9a-f-]{36})<\/ObjectId>/g)].map((m) => m[1]);
+  const placed = [...csXml.matchAll(/<Object Name="([^"]+)" ObjectId="([0-9a-f-]{36})" \/>/g)].map((m) => m[2]);
+  check('CODESYS: folders ISOBUS/<project> with every object, fixed ObjectIds', csXml.includes('<Folder Name="ISOBUS">')
+    && csXml.includes(`<Folder Name="${xmlText(pcs.name)}">`)
+    && ids.length === csObjs.length && new Set(ids).size === ids.length && placed.length === ids.length && placed.every((id) => ids.includes(id))
+    && objectId({ kind: 'pou', name: 'VT_IoMap' }) === objectId({ kind: 'pou', name: 'vt_iomap' })
+    && objectId({ kind: 'pou', name: 'VT_IoMap' }) !== objectId({ kind: 'gvl', name: 'VT_IoMap' }));
   check('CODESYS: version in every object', csObjs.every((o) => o.decl.includes(`VT Designer ${APP_VERSION}`)));
 
   // 11. zip for the TIA download (stored files)
