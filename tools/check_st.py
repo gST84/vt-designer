@@ -92,9 +92,19 @@ def check(st_file, xml_file=None):
             tn = type_names(t)
             if tn.upper() not in BASE and tn.upper() not in known and '.' not in tn:
                 errors.append(f'{name}: type {tn} van {v} bestaat niet')
+        seen = {}
+        for m in VAR_LINE.finditer(code_decl):  # CODESYS is case-insensitive: m and M are one name
+            u = m.group(1).upper()
+            if u in seen:
+                errors.append(f'{name}: {m.group(1)} twee keer gedeclareerd')
+            seen[u] = True
         if kind != 'POU':
             continue
+        if re.match(r'(?i)\s*FUNCTION\b(?!_BLOCK)', code_decl) and re.search(r'(?im)^\s*VAR_TEMP\b', code_decl):
+            errors.append(f'{name}: VAR_TEMP in een FUNCTION (CODESYS: enkel VAR)')
         code = strip(impl)
+        for m in re.finditer(r'(?i)\b(?:L?T|L?TIME)#[0-9A-Za-z.]*_[0-9A-Za-z_.]*', code):
+            errors.append(f'{name}: TIME-literal met _ ({m.group(0)}): CODESYS weigert dat')
         for o, c in [('IF', 'END_IF'), ('CASE', 'END_CASE'), ('FOR', 'END_FOR'), ('WHILE', 'END_WHILE'), ('REPEAT', 'END_REPEAT')]:
             no, nc = len(re.findall(rf'\b{o}\b', code)), len(re.findall(rf'\b{c}\b', code))
             if no != nc:

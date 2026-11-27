@@ -134,6 +134,7 @@ function rewriteCode(s, renames) {
     s = rewriteCalls(s, f, (a) => named(a, ['ARR', 'DIM'], (v) => `${f}(${v.ARR}, ${v.DIM})`));
   }
   s = s.replace(/\bTIME_TCK\s*\(\s*\)/g, 'TIME()');
+  s = s.replace(/\b(L?T|L?TIME)#([0-9A-Za-z_.]+)/gi, (_, p, v) => `${p}#${v.replace(/_/g, '')}`); // CODESYS: no '_' in a TIME literal
   s = rewriteCalls(s, 'BYTE_TO_CHAR', (a) => `(${a[0]})`);
   s = rewriteCalls(s, 'CHAR_TO_BYTE', charToByte);
   return s;
@@ -296,7 +297,7 @@ function headerInfo(lines) {
 }
 
 /** Declaration lines (VAR sections) → CODESYS text and parsed sections. */
-function declSections(lines, renames) {
+function declSections(lines, renames, isFunction = false) {
   const sections = [];
   const out = [];
   let sec = null;
@@ -304,7 +305,8 @@ function declSections(lines, renames) {
     const line = raw.replace(/\t/g, '   ');
     const s = SECTION.exec(line);
     if (s) {
-      sec = { kind: s[1].toUpperCase().replace(/\s+/, ' '), vars: [] };
+      const kind = s[1].toUpperCase().replace(/\s+/, ' ');
+      sec = { kind: isFunction && kind === 'VAR_TEMP' ? 'VAR' : kind, vars: [] }; // CODESYS: no VAR_TEMP in a FUNCTION
       sections.push(sec);
       out.push(sec.kind);
       continue;
@@ -375,8 +377,8 @@ function translatePou(b, ver, fileLead) {
     const v = parseVarLine(l);
     if (v && RENAME[v.name.toLowerCase()]) renames[v.name.toLowerCase()] = RENAME[v.name.toLowerCase()];
   }
-  const decls = declSections(head.filter((l) => !HEADER_KEYS.test(l)), renames);
   const isFb = b.kind === 'FUNCTION_BLOCK';
+  const decls = declSections(head.filter((l) => !HEADER_KEYS.test(l)), renames, !isFb);
   // a TIA function without result (Void) gets BOOL: not every CODESYS version accepts a function without type
   const ret = b.ret ? (/^void$/i.test(b.ret) ? 'BOOL' : stType(b.ret)) : null;
   const top = isFb ? `FUNCTION_BLOCK ${b.name}` : `FUNCTION ${b.name}${ret ? ' : ' + ret : ''}`;

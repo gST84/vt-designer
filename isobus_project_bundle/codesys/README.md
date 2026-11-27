@@ -24,8 +24,11 @@ een DB wordt een datatype `<DB>_<naam>` (bv. `VT_Io_out`).
 
 ## Importeren
 
-1. **Bibliotheken** (Bibliotheekbeheer › Bibliotheek toevoegen): **CAA CanL2** (namespace `CL2`). Kent de compiler
-   `CAA.HANDLE` of `CL2I.DATA` niet, voeg dan ook **CAA Types** (`CAA`) en **CAA Can Low Level Imp** (`CL2I`) toe.
+1. **Bibliotheken** (Bibliotheekbeheer › Bibliotheek toevoegen), alle drie nodig:
+   - **CAA CanL2** (CAA Can Low Level Extern, namespace `CL2`): `CL2.Read`, `CL2.Write`, `CL2.ERROR`, …;
+   - **CAA Types** (CAA Types Extern, namespace `CAA`): `CAA.HANDLE`, `CAA.gc_hINVALID`;
+   - **CAA Can Low Level Imp Extern** (namespace `CL2I`): `CL2I.DATA`, `CL2I.COBID`.
+   Zonder deze drie geeft de compiler "Unknown type 'CAA.HANDLE'" of "'CL2.ERROR'" in de LCan-blokken.
 2. **Project › PLCopenXML importeren**, het `.xml`-bestand kiezen en alles aanvinken. Bij een nieuwe export van
    het ontwerp: bestaande objecten vervangen.
 3. **CAN-interface** van de sturing op 250 kbit/s (ISOBUS). Gebruik op dezelfde interface niet ook de J1939- of
