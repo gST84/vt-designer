@@ -31,6 +31,17 @@ D9 59 17 00 02 00 00 00`;
 const hexToBytes = (s) => Uint8Array.from(s.trim().split(/\s+/).map((x) => parseInt(x, 16)));
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0').toUpperCase()).join(' ');
 const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+/** Number of child elements of every <data> element in an XML text (tags only: values are escaped). */
+function dataChildren(text) {
+  const out = [], stack = [];
+  for (const [, close, tag, self] of text.matchAll(/<(\/?)([A-Za-z][\w:.-]*)(?:\s[^>]*?)?(\/?)>/g)) {
+    if (close) { const e = stack.pop(); if (e.tag === 'data') out.push(e.kids); continue; }
+    if (stack.length) stack[stack.length - 1].kids++;
+    if (!self) stack.push({ tag, kids: 0 });
+    else if (tag === 'data') out.push(0);
+  }
+  return out;
+}
 
 /** A project with one object of every type, filled with non-default values. */
 export function everyTypeProject() {
@@ -424,6 +435,9 @@ export function runTests(log = (s) => console.log(s)) {
   const countTag = (t) => (csXml.match(new RegExp(`<${t}[ >]`, 'g')) || []).length;
   check('CODESYS: PLCopen XML with every object', countTag('pou') === 2 && countTag('dataType') === csObjs.filter((o) => o.kind === 'dut').length
     && countTag('globalVars') === 4 && countTag('InterfaceAsPlainText') === 2 && !/[\u0001\u0002\u0003]/.test(csXml));
+  // PLCopen TC6: <data> holds exactly one element (CODESYS: "ongeldig onderliggend element globalVars")
+  check('CODESYS: every <data> with exactly one element', [csXml, xml, plcopenXml(csObjs.filter((o) => o.kind !== 'gvl'), 'NoGvl')]
+    .every((doc) => dataChildren(doc).length > 0 && dataChildren(doc).every((n) => n === 1)));
   check('CODESYS: version in every object', csObjs.every((o) => o.decl.includes(`VT Designer ${APP_VERSION}`)));
 
   // 11. zip for the TIA download (stored files)

@@ -212,14 +212,19 @@ ${pous.map(pouXml).join('\n')}
   <instances>
     <configurations />
   </instances>
-  <addData>
-    <data name="http://www.3s-software.com/plcopenxml/globalvars" handleUnknown="implementation">
-${gvls.map(gvlXml).join('\n')}
-    </data>
+${gvls.length ? `  <addData>
+${gvls.map(gvlData).join('\n')}
   </addData>
-</project>
+` : ''}</project>
 `;
 }
+
+/** One GVL as additional data. PLCopen allows a single element per <data>: one <data> per GVL, as CODESYS writes it. */
+const gvlData = (o) => [
+  '    <data name="http://www.3s-software.com/plcopenxml/globalvars" handleUnknown="implementation">',
+  gvlXml(o),
+  '    </data>',
+].join('\n');
 
 // ---------- the CODESYS package ----------
 

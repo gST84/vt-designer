@@ -6,7 +6,8 @@ src/export/scl2st.js (stText) and, optionally, the PLCopen XML of the same packa
   - every name used in the code is declared (locals, GVLs, POUs, types, standard functions, CL2/CAA/CL2I);
   - every type used in a declaration exists; no declared name that is a CODESYS keyword (ST, SUB, …);
   - text literals not longer than the STRING(n) of the member they are assigned to;
-  - the XML is well-formed and holds the same objects, each POU with its code and plain-text declaration.
+  - the XML is well-formed and holds the same objects, each POU with its code and plain-text declaration;
+  - every <data> holds exactly one element (PLCopen TC6; CODESYS refuses the file otherwise).
 
 Usage: tools/check-codesys.sh, or python3 tools/check_st.py <bundle.st> [<bundle.xml>]"""
 import re, sys, xml.dom.minidom
@@ -136,6 +137,12 @@ def check(st_file, xml_file=None):
             for p in d.getElementsByTagName('pou'):
                 if not p.getElementsByTagName('ST') or not p.getElementsByTagName('InterfaceAsPlainText'):
                     errors.append(f"XML: POU {p.getAttribute('name')} zonder code of declaratie")
+            for data in d.getElementsByTagName('data'):
+                kids = [c for c in data.childNodes if c.nodeType == c.ELEMENT_NODE]
+                if len(kids) != 1:
+                    names = ', '.join(c.tagName for c in kids[:3])
+                    errors.append(f"XML: <data {data.getAttribute('name').rsplit('/', 1)[-1]}> met {len(kids)} elementen ({names}): "
+                                  'PLCopen staat er één toe')
     for e in errors:
         print(e)
     n = {k: sum(1 for o in objs if o[0] == k) for k in ('DUT', 'GVL', 'POU')}
