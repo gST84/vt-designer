@@ -10,8 +10,8 @@
 // What changes:
 //   #x → x, "x" → x, REGION → comment, SHL/SHR(IN := a, N := b) → SHL(a, b),
 //   LOWER_BOUND/UPPER_BOUND(ARR := a, DIM := n) → (a, n), TIME_TCK() → TIME(), String → STRING(254),
-//   String[n] → STRING(n), Char → BYTE, a function without result (Void) → BOOL, BYTE_TO_CHAR(x) → x, CHAR_TO_BYTE(s[i]) → s[i - 1] (CODESYS
-//   indexes strings from 0), locals with an IL keyword as name (st, sub, …) get another name,
+//   String[n] → STRING(n), Char → BYTE, a function without result (Void) → BOOL, BYTE_TO_CHAR(x) → x, CHAR_TO_BYTE(s[i]) → Strg_Byte(ADR(s), i)
+//   (LCan_CL2.st; an index on the STRING itself gave the first character every time in CODESYS), locals with an IL keyword as name (st, sub, …) get another name,
 //   a DB becomes a GVL ({attribute 'qualified_only'}) with a DUT per inline Struct and its start values
 //   as initialisations, the CM CAN parameters become the CAN layer of LCan_CL2.st (CODESYS CL2).
 
@@ -106,7 +106,9 @@ const named = (args, names, fn) => {
   return fn(v);
 };
 
-/** CHAR_TO_BYTE(expr[idx]) → expr[(idx) - 1]: a CODESYS STRING is indexed from 0, a TIA String from 1. */
+/** CHAR_TO_BYTE(expr[idx]) → Strg_Byte(ADR(expr), idx): character idx (from 1, as in TIA) of a string, read through a
+ * pointer by Strg_Byte in LCan_CL2.st. CODESYS documents expr[idx - 1] on a STRING, but on a controller it gave the
+ * first character every time ('GEREED' became GGGGGG on the VT). Not a string (Array of Char = BYTE): (expr). */
 function charToByte(args) {
   const a = args[0];
   if (!a.endsWith(']')) return `(${a})`;
@@ -115,7 +117,7 @@ function charToByte(args) {
     if (a[k] === ']') depth++;
     else if (a[k] === '[') {
       depth--;
-      if (depth === 0) return `${a.slice(0, k)}[(${a.slice(k + 1, -1)}) - 1]`;
+      if (depth === 0) return `Strg_Byte(ADR(${a.slice(0, k)}), ${a.slice(k + 1, -1)})`;
     }
   }
   return `(${a})`;

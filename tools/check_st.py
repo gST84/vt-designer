@@ -7,7 +7,8 @@ src/export/scl2st.js (stText) and, optionally, the PLCopen XML of the same packa
   - every type used in a declaration exists; no declared name that is a CODESYS keyword (ST, SUB, …);
   - text literals not longer than the STRING(n) of the member they are assigned to;
   - the XML is well-formed and holds the same objects, each POU with its code and plain-text declaration;
-  - every <data> holds exactly one element (PLCopen TC6; CODESYS refuses the file otherwise).
+  - every <data> holds exactly one element (PLCopen TC6; CODESYS refuses the file otherwise);
+  - no index on a STRING (s[i]): CODESYS gave the first character every time; LCan_CL2 has Strg_Byte for that.
 
 Usage: tools/check-codesys.sh, or python3 tools/check_st.py <bundle.st> [<bundle.xml>]"""
 import re, sys, xml.dom.minidom
@@ -35,6 +36,53 @@ def calls(code, ns):
                 args += 1
             k += 1
         yield m.group(1), args
+def string_indexes(code, local, gvls, duts):
+    """Index accesses on a STRING in the code (x[i], a.b[i], g.v[k].text[i]): the chain of names is followed
+    through the declared types (locals, GVL variables, DUT members)."""
+    def element(t):
+        m = re.match(r'(?i)^ARRAY\s*\[.*?\]\s*OF\s+(.+)$', t.strip())
+        return m.group(1).strip() if m else None
+    found, k, n = [], 0, len(code)
+    while k < n:
+        m = re.compile(r'(?<![\w.^#])([A-Za-z_]\w*)').search(code, k)
+        if not m:
+            break
+        k = m.end()
+        name, t = m.group(1), None
+        if name in local:
+            t = local[name]
+        elif name in gvls:
+            mm = re.match(r'\s*\.\s*([A-Za-z_]\w*)', code[k:])
+            if mm:
+                t = gvls[name].get(mm.group(1))
+                name += '.' + mm.group(1)
+                k += mm.end()
+        while t is not None:
+            rest = code[k:]
+            if re.match(r'\s*\[', rest):
+                if re.match(r'(?i)^W?STRING\b', t.strip()):
+                    found.append(name)
+                    break
+                j = k + rest.index('[')
+                depth = 0
+                while j < n:
+                    depth += code[j] == '['
+                    depth -= code[j] == ']'
+                    j += 1
+                    if depth == 0:
+                        break
+                k, t, name = j, element(t), name + '[…]'
+                continue
+            mm = re.match(r'\s*\.\s*([A-Za-z_]\w*)', rest)
+            if mm and type_names(t) in duts:
+                t = duts[type_names(t)].get(mm.group(1))
+                name += '.' + mm.group(1)
+                k += mm.end()
+                continue
+            break
+    return found
+
+
 # IL operators and other words CODESYS does not accept as a variable name
 RESERVED = set('''ST STN LD LDN S R CAL CALC CALCN RET RETC RETCN JMP JMPC JMPCN ADD SUB MUL DIV AND ANDN OR ORN XOR XORN NOT GT GE
 EQ NE LE LT MOD AT BY DO OF TO THIS SUPER'''.split())
@@ -92,6 +140,7 @@ def check(st_file, xml_file=None):
     pous = {n for k, n, *_ in objs if k == 'POU'}
     duts = {n: decl_vars(d) for k, n, d, _ in objs if k == 'DUT'}
     gvls = {n for k, n, *_ in objs if k == 'GVL'}
+    gvl_vars = {n: decl_vars(d) for k, n, d, _ in objs if k == 'GVL'}
     known = {x.upper() for x in pous | set(duts) | gvls | NAMESPACES}
     for kind, name, decl, impl in objs:
         code_decl = strip(decl)
@@ -124,6 +173,8 @@ def check(st_file, xml_file=None):
             want = CL2_INPUTS.get(f.upper())
             if want is not None and n != want:
                 errors.append(f'{name}: CL2.{f} met {n} ingangen, CODESYS vraagt er {want}')
+        for x in string_indexes(code, local, gvl_vars, duts):
+            errors.append(f'{name}: index op de STRING {x} (CODESYS gaf telkens het eerste teken): Strg_Byte(ADR(…), i) of een pointer')
         for m in re.finditer(r'(?i)\b(?:L?T|L?TIME)#[0-9A-Za-z.]*_[0-9A-Za-z_.]*', code):
             errors.append(f'{name}: TIME-literal met _ ({m.group(0)}): CODESYS weigert dat')
         for o, c in [('IF', 'END_IF'), ('CASE', 'END_CASE'), ('FOR', 'END_FOR'), ('WHILE', 'END_WHILE'), ('REPEAT', 'END_REPEAT')]:

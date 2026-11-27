@@ -13,6 +13,8 @@
 //  na "// ---- code" de implementatie. De VT Designer leest dit bestand en zet het mee in de
 //  PLCopen XML; in CODESYS plak je per object de declaratie en de code.
 //
+//  Versie 0.3 – 2026-11-27 – tekens van een tekst via een pointer (Strg_Byte, Chars_TO_Strg): de index op een STRING
+//  gaf in CODESYS telkens het eerste teken ('GEREED' werd GGGGGG op de VT).
 //  Versie 0.2 – 2026-11-27 – elke ingang van de CAA-functies ingevuld (CODESYS laat er geen weg), eEvent := CB.EVENT.NO_EVENT.
 //  Versie 0.1 – 2026-11-26 – eerste versie.
 // =====================================================================
@@ -45,7 +47,7 @@ END_VAR
 
 // ======== POU LCan_SetTransparentFilter
 FUNCTION_BLOCK LCan_SetTransparentFilter
-// lcan_cl2 versie 0.2 (2026-11-27)
+// lcan_cl2 versie 0.3 (2026-11-27)
 // Stijgende flank op execute: de regels van filterData met ignoreFilter = FALSE worden de
 // filterlijst van (hwIoOfTransparentModul, proxyIndex) voor LCan_RcvTransparentMessage.
 VAR_INPUT
@@ -108,7 +110,7 @@ busy := FALSE;
 
 // ======== POU LCan_RcvTransparentMessage
 FUNCTION_BLOCK LCan_RcvTransparentMessage
-// lcan_cl2 versie 0.2 (2026-11-27)
+// lcan_cl2 versie 0.3 (2026-11-27)
 // Eén ontvangen 29-bit dataframe per handshake, zoals met de CM CAN: valid = TRUE toont een frame;
 // een stijgende flank op ackMessage bevestigt het en toont het volgende frame dat door de filterlijst
 // (LCan_SetTransparentFilter met hetzelfde netId en proxyIndex) komt. Elke instantie heeft een eigen
@@ -244,7 +246,7 @@ END_IF;
 
 // ======== POU LCan_SendTransparentMessage
 FUNCTION_BLOCK LCan_SendTransparentMessage
-// lcan_cl2 versie 0.2 (2026-11-27)
+// lcan_cl2 versie 0.3 (2026-11-27)
 // Stijgende flank op execute: messageData (8 bytes) met messageId in de zendwachtrij van CL2.
 // done of error volgt in dezelfde aanroep en blijft tot execute FALSE is.
 VAR_INPUT
@@ -317,7 +319,7 @@ busy := FALSE;
 
 // ======== POU Chars_TO_Strg
 FUNCTION Chars_TO_Strg : BOOL
-// lcan_cl2 versie 0.2 (2026-11-27)
+// lcan_cl2 versie 0.3 (2026-11-27)
 // Zoals Chars_TO_Strg in TIA Portal: Cnt tekens vanaf Chars[pChars] (relatief tot de ondergrens) als tekst.
 VAR_INPUT
 	pChars : DINT;	// eerste teken, relatief tot de ondergrens van Chars
@@ -334,8 +336,10 @@ VAR
 	n : DINT;
 	lb : DINT;
 	buf : STRING(254);
+	pBuf : POINTER TO ARRAY[0..254] OF BYTE;	// de bytes van buf (geen index op de STRING zelf)
 END_VAR
 // ---- code
+pBuf := ADR(buf);
 lb := LOWER_BOUND(Chars, 1);
 n := UINT_TO_DINT(Cnt);
 IF n > 254 THEN
@@ -348,8 +352,24 @@ IF n < 0 THEN
 	n := 0;
 END_IF;
 FOR i := 0 TO n - 1 DO
-	buf[i] := Chars[lb + pChars + i];
+	pBuf^[i] := Chars[lb + pChars + i];
 END_FOR;
-buf[n] := 0;
+pBuf^[n] := 0;
 Strg := buf;
 Chars_TO_Strg := TRUE;
+
+// ======== POU Strg_Byte
+FUNCTION Strg_Byte : BYTE
+// lcan_cl2 versie 0.3 (2026-11-27)
+// Zoals CHAR_TO_BYTE(s[i]) in TIA Portal: teken i (vanaf 1) van een tekst, als byte. De vertaling schrijft
+// CHAR_TO_BYTE(s[i]) als Strg_Byte(ADR(s), i). Een index op de STRING zelf (s[i - 1]) gaf in CODESYS telkens
+// het eerste teken.
+VAR_INPUT
+	pStrg : POINTER TO ARRAY[0..254] OF BYTE;	// ADR(tekst), een STRING tot 254 tekens
+	i : DINT;	// teken, vanaf 1
+END_VAR
+// ---- code
+Strg_Byte := 0;
+IF pStrg <> 0 AND i >= 1 AND i <= 255 THEN
+	Strg_Byte := pStrg^[i - 1];
+END_IF;

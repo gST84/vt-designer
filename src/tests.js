@@ -397,8 +397,8 @@ export function runTests(log = (s) => console.log(s)) {
   const [fbObj] = translateScl(fbSrc, '9.9');
   check('CODESYS: SHL/SHR, #, quotes and reserved names translated',
     fbObj.impl.includes('step := WORD_TO_INT(SHL(BYTE_TO_WORD(a), SHR(16#10, 1)));   // "x" #y'), fbObj.impl.split('\n')[1]);
-  check('CODESYS: Char, String index from 0, LOWER_BOUND, TIME()',
-    fbObj.impl.includes('buf[0] := (a);') && fbObj.impl.includes('a := t[(step + 1) - 1];') && fbObj.impl.includes('LOWER_BOUND(buf, 1)')
+  check('CODESYS: Char, a character of a String through Strg_Byte, LOWER_BOUND, TIME()',
+    fbObj.impl.includes('buf[0] := (a);') && fbObj.impl.includes('a := Strg_Byte(ADR(t), step + 1);') && fbObj.impl.includes('LOWER_BOUND(buf, 1)')
     && fbObj.impl.includes('TIME_TO_DINT(TIME())'));
   check('CODESYS: strings untouched, REGION as comment', fbObj.impl.includes(`txt := 'a#b "c" $'x';`) && fbObj.impl.includes('// ---- Iets') && !/REGION/.test(fbObj.impl));
   check('CODESYS: declarations', ['step : INT;', 'buf : ARRAY[0..3] OF BYTE;', 't : STRING(254);', 'txt : STRING(10);', 'ff : ARRAY[0..7] OF BYTE := [8(16#FF)];',
