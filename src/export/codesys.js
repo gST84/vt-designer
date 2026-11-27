@@ -282,19 +282,21 @@ export function codesysProjectObjects(p) {
   return order(inFolder([FOLDER, p.name || 'Project'], sources.flatMap((s) => translateScl(s, APP_VERSION))));
 }
 
-/** Top folder of the import in CODESYS; below it CAN, VT_Client, TC_Client and the project. */
+/** Top folder of the import in CODESYS; below it CAN, VT_Client, TC_Client, TractorDecode and the project. */
 export const FOLDER = 'ISOBUS';
 const inFolder = (folder, objects) => objects.map((o) => ({ ...o, folder }));
 
 /**
- * The fixed blocks, translated: `files` = { lcan, vtUdt, vtScl, tcUdt?, tcScl? } as text
- * (LCan_CL2.st and the TIA sources from isobus_project_bundle).
+ * The fixed blocks, translated: `files` = { lcan, vtUdt, vtScl, tcUdt?, tcScl?, isoUdt?, isoScl?, isoCl2? } as text
+ * (LCan_CL2.st, ISO_TractorDecode_CL2.st and the TIA sources from isobus_project_bundle).
  */
 export function codesysBlockObjects(files) {
   const out = [...inFolder([FOLDER, 'CAN'], parseStObjects(files.lcan))];
-  for (const k of ['vtUdt', 'vtScl', 'tcUdt', 'tcScl']) {
-    if (files[k]) out.push(...inFolder([FOLDER, k.startsWith('vt') ? 'VT_Client' : 'TC_Client'], translateScl(files[k], APP_VERSION)));
+  const folders = { vt: 'VT_Client', tc: 'TC_Client', iso: 'TractorDecode' };
+  for (const k of ['vtUdt', 'vtScl', 'tcUdt', 'tcScl', 'isoUdt', 'isoScl']) {
+    if (files[k]) out.push(...inFolder([FOLDER, folders[k.replace(/(Udt|Scl)$/, '')]], translateScl(files[k], APP_VERSION)));
   }
+  if (files.isoCl2) out.push(...inFolder([FOLDER, folders.iso], parseStObjects(files.isoCl2)));
   return order(out);
 }
 

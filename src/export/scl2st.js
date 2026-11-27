@@ -388,8 +388,37 @@ function translatePou(b, ver, fileLead) {
     .join('\n').replace(/\n{3,}/g, '\n\n') + '\n';
   return {
     kind: 'pou', pouType: isFb ? 'functionBlock' : 'function', name: b.name, ret, sections: decls.sections,
-    decl, impl: bodyText(body, renames),
+    decl, impl: bodyText(body, renames), renames,
   };
+}
+
+/**
+ * The named arguments of every call `fn(…)` in `s` renamed with `map` (old name in lower case → new name): a
+ * parameter of a function with a reserved name (len, s, …) got another name, and so must the calls
+ * (ISO_Bits(value := x, len := 2) → ISO_Bits(value := x, lenB := 2)). Only the arguments of fn itself, not those
+ * of calls nested in them.
+ */
+export function renameArgs(s, fn, map) {
+  const re = new RegExp(`(^|[^0-9A-Za-z_#.])${fn}\\s*\\(`, 'gi');
+  const at = [];
+  let m;
+  while ((m = re.exec(s))) {
+    let depth = 0;
+    for (let k = m.index + m[0].length - 1; k < s.length; k++) {
+      const ch = s[k];
+      if (ch === '(' || ch === '[') depth++;
+      else if (ch === ')' || ch === ']') {
+        if (--depth === 0) break;
+      }
+      if (depth === 1 && (ch === '(' || ch === ',')) {
+        const a = /^(\s*)([A-Za-z_]\w*)\s*(?::=|=>)/.exec(s.slice(k + 1));
+        const to = a && map[a[2].toLowerCase()];
+        if (to) at.push([k + 1 + a[1].length, a[2].length, to]);
+      }
+    }
+  }
+  for (const [i, n, to] of at.sort((x, y) => y[0] - x[0])) s = s.slice(0, i) + to + s.slice(i + n);
+  return s;
 }
 
 // ---------- DB → GVL ----------
@@ -545,6 +574,10 @@ export function translateScl(src, ver = '') {
     else if (b.kind === 'DATA_BLOCK') out.push(...translateDb(b, ver, lead));
     else out.push(translatePou(b, ver, lead));
   });
+  // calls to a function of this file whose parameters were renamed (FB instances are not called by type name)
+  for (const f of out.filter((o) => o.pouType === 'function' && Object.keys(o.renames).length)) {
+    for (const o of out) if (o.kind === 'pou') o.impl = renameArgs(o.impl, f.name, f.renames);
+  }
   return out;
 }
 

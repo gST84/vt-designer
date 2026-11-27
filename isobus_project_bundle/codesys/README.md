@@ -1,13 +1,16 @@
-# VT_Client en TC_Client in CODESYS
+# VT_Client, TC_Client en de tractordecoder in CODESYS
 
 Dezelfde blokken als voor TIA Portal, voor een CODESYS-sturing met CAN (bv. een mobiele sturing van ifm, Epec of
-TTControl). De VT Designer **vertaalt de TIA-bronnen** uit `vt_client/` en `tc_client/` naar CODESYS ST, zodat een
-fix in de TIA-blokken ook in CODESYS terechtkomt. Enkel de CAN-laag is eigen code: `LCan_CL2.st`.
+TTControl). De VT Designer **vertaalt de TIA-bronnen** uit `vt_client/`, `tc_client/` en `tia_isobus_decoder/` naar
+CODESYS ST, zodat een fix in de TIA-blokken ook in CODESYS terechtkomt. Enkel de CAN-laag is eigen code: `LCan_CL2.st`
+en `ISO_TractorDecode_CL2.st`.
 
 | Bestand | Herkomst |
 |---|---|
 | `LCan_CL2.st` | vast (dit pakket): de blokken van de Siemens-bibliotheek LCan, op de CODESYS-bibliotheek **CAA CanL2** |
 | `VT_Client`, `TC_Client` en hun datatypes | vertaald uit `vt_client/` en `tc_client/` |
+| `ISO_TractorDecode`, zijn functies en de datatypes `typeIso…` | vertaald uit `tia_isobus_decoder/` |
+| `ISO_TractorDecode_CL2.st` | vast (dit pakket): leest de frames voor `ISO_TractorDecode` met **CAA CanL2** |
 | `VT_Pool`, `VT_Io`, `VT_IoMap` (en `TC_Pool`, `TC_Io`, `TC_IoMap`) | VT Designer, vertaald uit dezelfde export als voor TIA |
 
 ## Exporteren (VT Designer › Exporteren › CODESYS)
@@ -32,8 +35,8 @@ een DB wordt een datatype `<DB>_<naam>` (bv. `VT_Io_out`).
      `CB` niet kent.
    Zonder deze bibliotheken geeft de compiler "Unknown type 'CAA.HANDLE'" of "'CL2.ERROR'" in de LCan-blokken.
 2. Selecteer **Application**, dan **Project › PLCopenXML importeren** (niet Project › Importeren), het `.xml`-bestand
-   kiezen en alles aanvinken. Alles komt in de map **ISOBUS**, met de submappen CAN, VT_Client, TC_Client en een map
-   met de naam van je ontwerp. Bij een nieuwe export van het ontwerp: bestaande objecten vervangen.
+   kiezen en alles aanvinken. Alles komt in de map **ISOBUS**, met de submappen CAN, VT_Client, TC_Client, TractorDecode en
+   een map met de naam van je ontwerp. Bij een nieuwe export van het ontwerp: bestaande objecten vervangen.
 3. **CAN-interface** van de sturing op 250 kbit/s (ISOBUS). Gebruik op dezelfde interface niet ook de J1939- of
    ISOBUS-stack van de fabrikant met hetzelfde adres.
 
@@ -71,6 +74,26 @@ TC_IoMap();
 ```
 
 Zonder VT (enkel een task controller): `tc(enable := TRUE, ownClaim := TRUE, …)` en `vt` niet aanroepen.
+
+## Tractordecoder
+
+`ISO_TractorDecode_CL2` leest elke cyclus alle wachtende 29-bit frames met een eigen CL2-ontvanger (geen handshake,
+geen filterlijst) en geeft ze aan `ISO_TractorDecode`. Het werkt naast `VT_Client` en `TC_Client` op dezelfde
+CAN-interface. Zonder frame bewaakt het de timeouts.
+
+```
+VAR
+    tractorRx : ISO_TractorDecode_CL2;
+    tractor : typeIsoTractor;
+END_VAR
+
+tractorRx(canNet := 0, filterSa := 16#F0, tractor := tractor);   // 16#F0 = enkel de TECU
+// bv. tractor.wheelSpeed.speed_kmh (met .speedOk en .stat.valid), tractor.rearHitch.position_pct, tractor.rearPto.speed_rpm
+```
+
+De velden en berichten staan in `tia_isobus_decoder/README.md`. Laat `filterSa` op 16#F0: Machine Selected Speed komt
+soms ook van de terminal, en dan overschrijven die twee elkaar. `overflow` = TRUE: er wachtten meer dan `maxFrames`
+frames (standaard 200 per cyclus).
 
 ## Verschillen met TIA
 

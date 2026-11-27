@@ -16,7 +16,8 @@ import { modal, toast } from './dialogs.js';
 const BUNDLES = {
   vt: { dir: 'isobus_project_bundle/vt_client/', files: ['01_VTC_Types.udt', '02_VT_Client.scl', 'README.md'], fb: 'VT_Client' },
   tc: { dir: 'isobus_project_bundle/tc_client/', files: ['01_TCC_Types.udt', '02_TC_Client.scl', 'README.md'], fb: 'TC_Client' },
-  cs: { dir: 'isobus_project_bundle/codesys/', files: ['LCan_CL2.st', 'README.md'] },
+  cs: { dir: 'isobus_project_bundle/codesys/', files: ['LCan_CL2.st', 'ISO_TractorDecode_CL2.st', 'README.md'] },
+  iso: { dir: 'isobus_project_bundle/tia_isobus_decoder/', files: ['01_ISO_Types.udt', '02_ISO_TractorDecode.scl'] },
 };
 const FB_GITHUB = 'https://github.com/gST84/vt-designer/tree/main/isobus_project_bundle';
 
@@ -39,11 +40,12 @@ const tcFiles = (p) => [
 ];
 const renamed = (f, name) => ({ ...f, name });
 const textOf = (f) => new TextDecoder().decode(f.data);
-/** CODESYS: the CAN layer and the translated VT_Client (and TC_Client) from the fetched sources, then the project. */
+/** CODESYS: the CAN layer, the translated VT_Client (and TC_Client) and the tractor decoder from the fetched sources, then the project. */
 const codesysAll = (p, fb) => [
   ...codesysBlockObjects({
     lcan: textOf(fb.cs[0]), vtUdt: textOf(fb.vt[0]), vtScl: textOf(fb.vt[1]),
     ...(p.implement.enabled ? { tcUdt: textOf(fb.tc[0]), tcScl: textOf(fb.tc[1]) } : {}),
+    isoUdt: textOf(fb.iso[0]), isoScl: textOf(fb.iso[1]), isoCl2: textOf(fb.cs[1]),
   }),
   ...codesysProjectObjects(p),
 ];
@@ -76,11 +78,11 @@ const TARGETS = [
       ...(p.implement.enabled ? [fb.tc[0], ...tcFiles(p), fb.tc[1], renamed(fb.tc[2], 'README_TC_Client.md')] : [])],
     hint: "Pool-DB, interface-DB, koppel-FC en de FB's van GitHub in één zip; met een werktuig ook alles voor TC_Client." },
   { key: 'csall', section: 'codesys', label: 'Alles', file: (p) => `${fileBase(p.name)}_CODESYS.xml`, fetched: (p, fb) => plcopenXml(codesysAll(p, fb), p.name),
-    hint: 'Eén PLCopen XML voor Project › PLCopenXML importeren: de CAN-laag LCan_CL2, VT_Client (met een werktuig ook TC_Client), vertaald uit de TIA-bronnen van GitHub, en pool, interface en koppelfunctie(s). Voeg in CODESYS de bibliotheek "CAA CanL2" toe; zie README_CODESYS.md in de ST-zip.' },
+    hint: 'Eén PLCopen XML voor Project › PLCopenXML importeren: de CAN-laag LCan_CL2, VT_Client (met een werktuig ook TC_Client) en de tractordecoder ISO_TractorDecode_CL2, vertaald uit de TIA-bronnen van GitHub, en pool, interface en koppelfunctie(s). Voeg in CODESYS de bibliotheek "CAA CanL2" toe; zie README_CODESYS.md in de ST-zip.' },
   { key: 'csproj', section: 'codesys', label: 'Pool en interface', file: (p) => `${fileBase(p.name)}_CODESYS_project.xml`, text: (p) => plcopenXml(codesysProjectObjects(p), p.name),
     hint: 'Enkel wat bij dit ontwerp hoort: VT_Pool, VT_Io en VT_IoMap (met een werktuig ook TC_Pool, TC_Io en TC_IoMap). Na een wijziging van het ontwerp opnieuw importeren en de bestaande objecten vervangen.' },
   { key: 'csst', section: 'codesys', label: 'Alles als ST-tekst', file: (p) => `${fileBase(p.name)}_CODESYS_st.zip`, bundle: 'cs',
-    zip: (p, fb) => [{ name: `${fileBase(p.name)}_CODESYS.st`, data: stText(codesysAll(p, fb), stHeader(`"${p.name}"`)) }, renamed(fb.cs[1], 'README_CODESYS.md')],
+    zip: (p, fb) => [{ name: `${fileBase(p.name)}_CODESYS.st`, data: stText(codesysAll(p, fb), stHeader(`"${p.name}"`)) }, renamed(fb.cs[2], 'README_CODESYS.md')],
     hint: 'Dezelfde objecten als tekst, als de XML-import niet lukt: per object de declaratie en de code om in CODESYS te plakken.' },
   { key: 'gvl', section: 'codesys', label: 'Enkel de pool (GVL-tekst)', file: (p) => `${p.export.codesysGvl}.st`, text: codesysGvl,
     hint: 'Enkel de pool, voor een eigen ISOBUS-client (niet voor VT_Client: gebruik dan Alles). Application › Object toevoegen › Globale variabelenlijst met dezelfde naam, en de tekst als declaratie plakken.' },
@@ -131,7 +133,7 @@ export async function exportDialog(store, initial = 'tia') {
         if (!r.ok) throw new Error(`${b.dir}${name}: HTTP ${r.status}`);
         return { name, data: new Uint8Array(await r.arrayBuffer()) };
       }));
-      fbFiles = { vt: await get(BUNDLES.vt), tc: p().implement.enabled ? await get(BUNDLES.tc) : [], cs: await get(BUNDLES.cs) };
+      fbFiles = { vt: await get(BUNDLES.vt), tc: p().implement.enabled ? await get(BUNDLES.tc) : [], cs: await get(BUNDLES.cs), iso: await get(BUNDLES.iso) };
     }
     return fbFiles;
   }

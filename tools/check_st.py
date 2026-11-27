@@ -8,7 +8,8 @@ src/export/scl2st.js (stText) and, optionally, the PLCopen XML of the same packa
   - text literals not longer than the STRING(n) of the member they are assigned to;
   - the XML is well-formed and holds the same objects, each POU with its code and plain-text declaration;
   - every <data> holds exactly one element (PLCopen TC6; CODESYS refuses the file otherwise);
-  - no index on a STRING (s[i]): CODESYS gave the first character every time; LCan_CL2 has Strg_Byte for that.
+  - no index on a STRING (s[i]): CODESYS gave the first character every time; LCan_CL2 has Strg_Byte for that;
+  - every named argument of a call to a function or an FB instance is a parameter of that POU.
 
 Usage: tools/check-codesys.sh, or python3 tools/check_st.py <bundle.st> [<bundle.xml>]"""
 import re, sys, xml.dom.minidom
@@ -83,6 +84,39 @@ def string_indexes(code, local, gvls, duts):
     return found
 
 
+def params(decl):
+    """Names (upper case) of the VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT of a POU declaration."""
+    out, sec = set(), None
+    for line in strip(decl).split('\n'):
+        m = re.match(r'(?i)\s*(VAR_INPUT|VAR_OUTPUT|VAR_IN_OUT|VAR_TEMP|VAR_GLOBAL|VAR_STAT|VAR|END_VAR)\b', line)
+        if m:
+            sec = m.group(1).upper()
+            continue
+        v = VAR_LINE.match(line)
+        if v and sec in ('VAR_INPUT', 'VAR_OUTPUT', 'VAR_IN_OUT'):
+            out.add(v.group(1).upper())
+    return out
+
+
+def named_args(code, callee):
+    """The named arguments of every call callee(…) in the code (not those of calls nested in them)."""
+    for m in re.finditer(rf'(?<![\w.#]){callee}\s*\(', code, flags=re.I):
+        depth, k = 0, m.end() - 1
+        while k < len(code):
+            c = code[k]
+            if c in '([':
+                depth += 1
+            elif c in ')]':
+                depth -= 1
+                if depth == 0:
+                    break
+            if depth == 1 and c in '(,':
+                a = re.match(r'\s*([A-Za-z_]\w*)\s*(?::=|=>)', code[k + 1:])
+                if a:
+                    yield a.group(1)
+            k += 1
+
+
 # IL operators and other words CODESYS does not accept as a variable name
 RESERVED = set('''ST STN LD LDN S R CAL CALC CALCN RET RETC RETCN JMP JMPC JMPCN ADD SUB MUL DIV AND ANDN OR ORN XOR XORN NOT GT GE
 EQ NE LE LT MOD AT BY DO OF TO THIS SUPER'''.split())
@@ -141,6 +175,8 @@ def check(st_file, xml_file=None):
     duts = {n: decl_vars(d) for k, n, d, _ in objs if k == 'DUT'}
     gvls = {n for k, n, *_ in objs if k == 'GVL'}
     gvl_vars = {n: decl_vars(d) for k, n, d, _ in objs if k == 'GVL'}
+    pou_params = {n.upper(): params(d) for k, n, d, _ in objs if k == 'POU'}
+    functions = {n for k, n, d, _ in objs if k == 'POU' and re.match(r'(?i)\s*FUNCTION\b(?!_BLOCK)', strip(d))}
     known = {x.upper() for x in pous | set(duts) | gvls | NAMESPACES}
     for kind, name, decl, impl in objs:
         code_decl = strip(decl)
@@ -173,6 +209,11 @@ def check(st_file, xml_file=None):
             want = CL2_INPUTS.get(f.upper())
             if want is not None and n != want:
                 errors.append(f'{name}: CL2.{f} met {n} ingangen, CODESYS vraagt er {want}')
+        callees = {f: f for f in functions} | {v: type_names(t) for v, t in local.items() if type_names(t).upper() in pou_params}
+        for callee, pou in callees.items():
+            for a in named_args(code, callee):
+                if a.upper() not in pou_params[pou.upper()]:
+                    errors.append(f'{name}: {callee}(… {a} …): {pou} heeft geen parameter {a}')
         for x in string_indexes(code, local, gvl_vars, duts):
             errors.append(f'{name}: index op de STRING {x} (CODESYS gaf telkens het eerste teken): Strg_Byte(ADR(…), i) of een pointer')
         for m in re.finditer(r'(?i)\b(?:L?T|L?TIME)#[0-9A-Za-z.]*_[0-9A-Za-z_.]*', code):
@@ -183,7 +224,7 @@ def check(st_file, xml_file=None):
                 errors.append(f'{name}: {o} {no}× tegen {c} {nc}×')
         names = {x.upper() for x in local} | {name.upper()}
         depth = 0
-        for m in re.finditer(r"[()]|(?<![.\w#])([A-Za-z_]\w*)(?!\s*#)", code):
+        for m in re.finditer(r"[()]|(?<![.\w#])([A-Za-z_]\w*)\b(?!\s*#)", code):
             tok = m.group(0)
             if tok == '(':
                 depth += 1

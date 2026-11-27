@@ -412,6 +412,10 @@ export function runTests(log = (s) => console.log(s)) {
   check('CODESYS: without hwIdCmCan the status byte becomes canNet, without rxProxyIndex no filter list',
     noHw.decl.includes('canNet : USINT := 0;') && noHw.impl.includes('netId := canNet,') && !/proxyIndex|outputArea|canStatus/.test(noHw.impl + noHw.decl));
   check('CODESYS: parsed interface', fbObj.sections.map((s) => s.kind).join() === 'VAR_INPUT,VAR' && fbObj.sections[1].vars.some((v) => v.name === 'step' && v.type === 'INT'));
+  const fnRen = translateScl(['FUNCTION "F" : USInt', '   VAR_INPUT', '      len : USInt;', '   END_VAR', 'BEGIN', '\t#F := #len;', 'END_FUNCTION',
+    'FUNCTION "G" : USInt', '   VAR_INPUT', '      len : USInt;', '   END_VAR', 'BEGIN', '\t#G := "F"(len := "F"(len := #len + 1));', 'END_FUNCTION'].join('\n'), '9.9');
+  check('CODESYS: a parameter with a reserved name (len) is renamed in the calls too',
+    fnRen[0].decl.includes('lenB : USINT;') && fnRen[1].impl.includes('G := F(lenB := F(lenB := lenB + 1));'), fnRen[1].impl);
   check('CODESYS: initial values', valueText(parseValue('[8(16#FF)]')) === '[8(16#FF)]' && parseValue("(a := 1, b := 'x;y')").members[1].value.text === "'x;y'");
 
   const pcs = newProject('CS');
